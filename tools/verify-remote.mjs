@@ -149,16 +149,23 @@ const checks = [
   // 注意：AGP 9 起包名不写在 AndroidManifest.xml，而是在 app/build.gradle.kts 的
   // namespace 里；Manifest 中用 ".MainActivity" 这类相对写法。别在这里断言包名。
   ['app/src/main/AndroidManifest.xml', 'AndroidManifest.xml', '.MainActivity'],
-  ['app/build.gradle.kts', 'app/build.gradle.kts', 'versionName = "0.4.0"'],
+  ['app/build.gradle.kts', 'app/build.gradle.kts', (local) => {
+    // 不写死版本号——否则每次发版核对都会红一次（0.5.0 发版时就踩过）。
+    // 断言的是"远程的版本号与本地这份文件里的一致"，随版本自动跟随。
+    const m = /versionName\s*=\s*"([^"]+)"/.exec(local);
+    return m ? m[0] : null;
+  }],
 ];
 
 let allOk = true;
-for (const [remotePath, label, mustContain] of checks) {
+for (const [remotePath, label, expected] of checks) {
   const text = await readRemoteText(remotePath);
   const local = await readFile(remotePath, 'utf8');
   const same = text.replace(/\r\n/g, '\n') === local.replace(/\r\n/g, '\n');
-  const has = text.includes(mustContain);
-  line(`  ${same ? '✓' : '✗'} ${label.padEnd(22)} 与本地一致=${same}  含关键内容=${has}`);
+  const mustContain = typeof expected === 'function' ? expected(local) : expected;
+  const has = mustContain == null ? same : text.includes(mustContain);
+  const shown = mustContain == null ? '（无法从本地推出，跳过）' : String(has);
+  line(`  ${same ? '✓' : '✗'} ${label.padEnd(22)} 与本地一致=${same}  含关键内容=${shown}`);
   if (!same || !has) allOk = false;
 }
 
