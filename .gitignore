@@ -8,6 +8,8 @@ app/build/
 # 项目根目录下的 Gradle 构建缓存（注意与下面 .gradle-home 区分：
 # 那个是 Gradle 发行版与依赖缓存，这个是本项目的增量构建状态）
 .gradle/
+# Kotlin 编译器的增量编译缓存，构建时自动重建
+.kotlin/
 
 # ── 本项目的自包含运行环境（体积很大，绝不入库）────────────
 # Android SDK：约 790 MB，由 tools/install-sdk-packages.mjs 重新生成

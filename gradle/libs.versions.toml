@@ -1,5 +1,5 @@
 [versions]
-# 版本号均由 tools/resolve-versions.mjs / tools/list-lib-versions.mjs 从仓库元数据实测得到。
+# 版本号均为从各库仓库元数据实测得到的实际可用版本，不是凭记忆填的。
 #
 # 选型说明：这些版本锁定在"与 compileSdk 36 匹配"的稳定组合上。
 # 原因是更新的一批库（core-ktx 1.19.x、compose-ui 1.12.x、activity 1.13.x）
