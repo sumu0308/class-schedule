@@ -310,7 +310,7 @@ node tools/verify-remote.mjs
 | 问题 | 症状 | 修法 |
 | --- | --- | --- |
 | 从 PowerShell 调 `push.bat -m "说明"` | 嵌套引号被解析掉，**三个提交的信息都变成了一个 `"` 字符** | `push.bat` 里写明正确调用方式；已用 `tools/fix-broken-messages.mjs` 按完整哈希把那三个提交的信息改回来（只换 message，tree 与 parent 不变） |
-| `timeout /t 3 /nobreak >nul` | stdin 被重定向时 `timeout.exe` 直接报 `Input redirection is not supported` 退出，**3 秒等待退化成立刻重试**，8 次重试几百毫秒就打完了 | 改成 `< nul >nul` |
+| `timeout /t 3 /nobreak >nul` | stdin 被重定向时 `timeout.exe` 直接报 `Input redirection is not supported` 退出，**3 秒等待退化成立刻重试**，8 次重试几百毫秒就打完了 | 改成 `ping -n 4 127.0.0.1 >nul 2>&1`。注意：把 stdin 接到 `nul` **也没用**（那仍是重定向）——我第一版就是这么"修"的，隔离测试才发现根本没生效 |
 | 核对脚本走匿名 API | 匿名只有 60 次/小时，而一轮核对要十几次，跑几轮就 `HTTP 403 rate limit exceeded`，**与仓库内容对不对毫无关系** | 改用 `gh` 令牌（5000 次/小时），取不到才退回匿名并明确提示 |
 
 另外两处顺带改好：
@@ -319,6 +319,8 @@ node tools/verify-remote.mjs
 - 补上 `uncaughtException` / `unhandledRejection` 处理：之前限流抛错时 Node 会以 libuv 断言崩溃（`UV_HANDLE_CLOSING`）退出，连结论都不打印
 
 `tools/fix-broken-messages.mjs` 的一个设计取舍：**待修提交按完整哈希写死**，不按"信息内容"匹配。因为那几个提交的信息都只是一个 `"`，光看内容根本分不出谁是谁——按内容模糊匹配很容易改错对象。
+
+用 `FORCE=1` 重写历史时还踩到一个坑：`--force-with-lease` 一直被拒（`! [rejected] main -> main (stale info)`）。原因是**这个克隆从未 fetch 过**，没有 `origin/main` 跟踪引用可供比对，git 为安全起见一律拒绝。改成用 `git ls-remote` 读出远程当前提交、显式写成 `--force-with-lease=main:<sha>` 才通过——它仍然会在远程被人改动时拒绝覆盖。
 
 ### 0.4.0 — 2026-10-11
 
