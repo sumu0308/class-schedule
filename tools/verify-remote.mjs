@@ -145,7 +145,13 @@ line(`\n【关键文件内容抽查（从 GitHub 下载，与本地比对）】`
 const { readFile } = await import('node:fs/promises');
 const checks = [
   ['README.md', 'README.md', '单机版安卓课表 App'],
-  ['app/src/main/java/com/classschedule/app/ui/ScheduleGrid.kt', 'ScheduleGrid.kt', 'TARGET_TYPICAL_ROW_DP'],
+  // 别写死常量名：排版算法改过几轮（TARGET_TYPICAL_ROW_DP → TARGET_ROW_DP →
+  // FALLBACK_PX_PER_MINUTE），每次改名核对就红一次，而红的跟"推没推上去"毫无关系。
+  // 改成从本地文件里现取一个全大写常量名当"指纹"，随代码自动跟随。
+  ['app/src/main/java/com/classschedule/app/ui/ScheduleGrid.kt', 'ScheduleGrid.kt', (local) => {
+    const names = [...new Set(local.match(/\b[A-Z][A-Z0-9_]{6,}\b/g) ?? [])];
+    return names.length > 0 ? names.sort()[0] : null;
+  }],
   // 注意：AGP 9 起包名不写在 AndroidManifest.xml，而是在 app/build.gradle.kts 的
   // namespace 里；Manifest 中用 ".MainActivity" 这类相对写法。别在这里断言包名。
   ['app/src/main/AndroidManifest.xml', 'AndroidManifest.xml', '.MainActivity'],
