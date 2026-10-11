@@ -160,9 +160,12 @@ class-schedule/
 │     │  └─ PeriodBlockTest.kt          10 个用例：大节划分与作息间隔
 │     └─ main/res/                      图标、主题、字符串
 ├─ tools/                               环境、诊断与核对脚本（Node.js）
+│  ├─ install-sdk-packages.mjs          装 Android SDK（不依赖 sdkmanager）
+│  ├─ setup-gradle-wrapper.mjs          准备 Gradle 与 wrapper
 │  ├─ wifi-share.mjs                    局域网传包服务器
 │  ├─ verify-layout-math.mjs            排版数值独立复算
-│  └─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
+│  ├─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
+│  └─ （其余为版本探测、镜像探测等调试脚本，见 tools/ 目录）
 ├─ gradle/libs.versions.toml            依赖版本集中管理
 ├─ build.bat / serve-apk.bat            一键打包 / 局域网传包
 ├─ push.bat                             推送到 GitHub（带重试与自动核对）
@@ -249,6 +252,13 @@ push.bat -m "改动说明"    → 先提交全部改动再推送
 node tools/verify-remote.mjs
 ```
 
+核对脚本会输出四项：仓库概况、最新提交、文件统计与顶层结构、关键文件内容抽查。两种容易被误判成"出问题了"的情况，这里先说明：
+
+| 现象 | 真实含义 |
+| --- | --- |
+| 刚推送完就核对，某个文件报"与本地一致=false" | **多半是 GitHub 读取延迟**，不是真的不一致。脚本已内置带 cache-buster 的重试；若仍报，等十几秒重跑一次再判断 |
+| 报 `! 本环境起不了 git 子进程（DSH 沙箱限制），跳过…` | 这是**沙箱限制**（DSH 不允许 Node 以管道方式启动子进程，报 `spawnSync git EPERM`），与远程内容无关，不影响核对结论。想确认有没有未推送的提交，在本机终端跑 `git log origin/main..HEAD` |
+
 内容只包括源码、文档与脚本；`.android-sdk/`（约 790 MB）、`.gradle-home/`（约 1.7 GB）、构建产物与 APK 都由 `.gitignore` 排除，克隆后按[自己构建](#自己构建开发者)一节重新生成即可。
 
 ---
@@ -281,6 +291,17 @@ node tools/verify-remote.mjs
 **真正的根因其实与认证无关**：`github.com:443` 连接不稳定，实测 3 次里 2 次超时（21 秒），成功那次只要 1.3 秒；而 `api.github.com` 一直稳定（730 ms）。`push.bat` 的重试就是针对这一点——**遇到这种超时不要往账号密码方向查**。
 
 顺带发现并修正：初始化时的 `git add -A` 把我写提交信息用的临时文件 `commit-msg.txt` 一起提交了，已从提交中移除。
+
+### 核对脚本加固 — 2026-10-11
+
+**改动：让 `verify-remote.mjs` 不再假报警**
+
+第一次跑核对时它报 `README.md 与本地一致=false`，看着像推送漏了文件。查下来是**读取延迟**：GitHub 的 contents 接口在刚 push 完的一小段时间里可能返回旧内容。于是：
+
+- 文件读取加 `?cb=<时间戳>` 打散缓存，失败时退避重试 4 次（`readRemoteText`）
+- 「同步状态」一节区分两类失败：**真的不一致**（提交号不同 / 跟踪文件数不同）才判失败；**环境起不了 git 子进程**只提示、不影响结论。之前它用 `catch {}` 静默显示"当前目录不是 git 仓库"，把真实原因藏住了——现在会打印 `spawnSync git EPERM` 并说明是沙箱限制
+- 文件数不再写死在输出里（原来印着"本地 git 跟踪 52 个"，早已过时，现在两边都动态取值并互相比对）
+- README 的「提交到 GitHub」一节补上这两种误判的对照表
 
 ### 0.4.0 — 2026-10-11
 
