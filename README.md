@@ -211,6 +211,7 @@ class-schedule/
 | `validateSigningRelease` 报 `AccessDeniedException` | 调试密钥库默认位于 `C:\Users\<用户>\.android\`，受限环境下不可写 | 密钥库移入项目 `.keystore/`，构建脚本用推导出的绝对路径引用，项目可整体迁移 |
 | Gradle 报 `Couldn't open current thread, error = 5` | 文件监视器在受限环境下无法工作 | 无害警告，不影响构建结果 |
 | `git push` 报 `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS` | git 默认用 Windows schannel 做 TLS，在受限环境下取不到客户端凭据（与账号密码无关，握手前就失败） | 本仓库配置 `git config http.sslBackend openssl`，改用自带的 OpenSSL |
+| `git push` 报 `Failed to connect to github.com:443 after 21000 ms`，但同一条命令重试就好了 | **本机到 github.com:443 的连接不稳定**（实测约 1/3 概率超时，成功时只要 1～10 秒）；`api.github.com` 一直稳定 | 用 `push.bat` 推送，失败会自动重试；别把这种超时误判成账号或密码问题 |
 
 ---
 
@@ -231,10 +232,17 @@ class-schedule/
 ```bat
 git add -A
 git commit -m "说明这次改了什么"
-git push
+push.bat
 ```
 
-推送后可以核对远程内容和本地是否一致（会逐个文件比对内容，并检查有没有误传构建产物）：
+**为什么要用 `push.bat` 而不是直接 `git push`**：这台机器到 `github.com:443` 的连接不稳定（实测约 1/3 概率超时，成功时 1～10 秒），而系统里 git 自带的凭据助手也起不来（每个助手都要经 `sh.exe` 启动，而 `sh.exe` 在本机直接崩溃 `couldn't create signal pipe, Win32 error 5`）。`push.bat` 把令牌接进 URL 并绕开凭据助手，失败自动重试最多 8 次：
+
+```
+push.bat                → 推送到 main
+push.bat -m "改动说明"    → 先提交全部改动再推送
+```
+
+推送后核对远程内容和本地是否一致（逐文件比对，并检查有没有误传构建产物）：
 
 ```bat
 node tools/verify-remote.mjs
