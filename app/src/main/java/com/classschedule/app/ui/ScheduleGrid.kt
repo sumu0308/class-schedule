@@ -66,18 +66,23 @@ object GridMetrics {
     /** 一天几列时用的列宽（5/6 天正好占满一屏，7 天略超一屏、可横向滑动） */
     fun dayWidthDp(dayCount: Int): Float = if (dayCount <= 5) 64f else 52f
 
-    /** 一"大节"由几小节组成。课表按大节分行，一格就是一门课占位。 */
+    /** 一"大节"由几小节组成。一行就是一个大节，课程块内标注的时间也按大节合并。 */
     const val PERIODS_PER_BLOCK = 2
 
     /**
-     * 左侧固定栏总宽（节次号 + 大节时间）。
+     * 左侧固定栏总宽（节次号 + 大节时间 + 整点刻度）。
      *
-     * 时间文字用 7.5 sp，最长的 "14:30-16:10" 约占 34 dp，剩下的给节次号。
+     * 自左向右分三段，加起来正好是这一栏的全部宽度：
+     *   [0, PERIOD_NUM_DP)                              节次号  "1"      8.5 sp
+     *   [.., width - HOUR_RULER_DP)                      大节时间 "14:30-16:10" 7 sp
+     *   [width - HOUR_RULER_DP, width]                   整点刻度 "18:00"  9 sp
+     *
+     * 三段都不能再挤：整点刻度要完整的 "18:00"（5 字符），大节时间最长 11 字符，
+     * 节次号虽然只有 1–2 位但要留出与时间的间隙。
      */
-    const val GUTTER_WIDTH_DP = 62f
-
-    /** 其中时间文字占的宽度，剩下的留给节次号 */
-    const val TIME_LABEL_DP = 34f
+    const val GUTTER_WIDTH_DP = 64f
+    const val PERIOD_NUM_DP = 16f
+    const val HOUR_RULER_DP = 30f
 
     const val HEADER_HEIGHT_DP = 34f
     const val BLOCK_GAP_DP = 2.5f
@@ -85,44 +90,46 @@ object GridMetrics {
     const val TEXT_PADDING_DP = 5f
 
     /**
-     * 一格（一个大节）的理想高度。
+     * 每分钟占多少像素的兜底值。
      *
-     * 学校课表那一格量出来约 96 dp，这里取 110 dp —— 手机上比它略高一点更好点按，
-     * 也不会让"一天四门课"只占屏幕上半截。屏幕放得下时行高不会超过这个值：
-     * 课表要"一眼看全一天"，但也不是把格子撑满屏幕就好，那样反而显得松散。
+     * 1.45 = 40 分钟的小节正好占 58 dp —— 这是第一版的行高口径，
+     * 也是"课名 + 教室两行字"能舒服放下的最小高度。
+     * 没有屏幕尺寸信息（或算出来的值更小）时用它。
      */
-    const val TARGET_ROW_DP = 110f
-
-    /** 一格的最小高度，低于这个值课名就挤了 */
-    const val MIN_ROW_DP = 60f
+    const val FALLBACK_PX_PER_MINUTE = 1.45f
 
     /**
-     * 一格的最大高度。
+     * 每分钟占多少像素的下限。
      *
-     * 行数很少（比如一天只有 2 大节）时不该把格子拉成大块，
-     * 所以上限就取理想高度：够用即可，剩下的地方留白。
+     * 0.95 → 40 分钟的小节 = 38 dp，再矮课名就挤了（这是可读性底线）。
+     * 必须小于兜底值，否则"整天铺满屏幕"会把行压到看不清。
      */
-    const val MAX_ROW_DP = TARGET_ROW_DP
+    const val MIN_PX_PER_MINUTE = 0.95f
 
-    /** 没有屏幕尺寸信息时的兜底格高 */
-    const val FALLBACK_ROW_DP = 80f
+    /**
+     * 每分钟占多少像素的上限。
+     *
+     * 屏幕很高时不该让一分钟占太多像素，否则一天要滚好几屏。
+     * 2.2 → 40 分钟的小节 = 88 dp，100 分钟的大节 = 220 dp，已经足够宽松。
+     */
+    const val MAX_PX_PER_MINUTE = 2.2f
 
-    fun nameTextSizeSp(rowHeightPx: Float, density: Float): Float {
-        val dp = rowHeightPx / density
+    fun nameTextSizeSp(blockHeightPx: Float, density: Float): Float {
+        val dp = blockHeightPx / density
         return when {
             dp >= 150f -> 14f
-            dp >= 120f -> 13f
-            dp >= 92f -> 12f
-            dp >= 68f -> 11f
-            dp >= 46f -> 10f
+            dp >= 110f -> 13f
+            dp >= 80f -> 12f
+            dp >= 62f -> 11f
+            dp >= 48f -> 10f
             else -> 9f
         }
     }
 
     /** 课程名最多显示几行（块矮时只给一行） */
-    fun nameMaxLines(rowHeightPx: Float, density: Float): Int {
-        val dp = rowHeightPx / density
-        return if (dp >= 110f) 3 else if (dp >= 76f) 2 else 1
+    fun nameMaxLines(blockHeightPx: Float, density: Float): Int {
+        val dp = blockHeightPx / density
+        return if (dp >= 100f) 3 else if (dp >= 66f) 2 else 1
     }
 }
 
@@ -159,13 +166,14 @@ class GridGeometry(
     val periods: List<Period>,
     /** 每行包含哪些 period（按下标），行与行不重叠 */
     val rows: List<GridRow>,
-    /** 行高（所有行相同） */
-    val rowHeight: Float,
-    /** 行距内容区顶部的像素偏移 */
+    /** 每一行距内容区顶部的像素偏移，按真实时间成比例 */
     val offsets: FloatArray,
+    /** 每一行的高度，同样按真实时间成比例 */
     val heights: FloatArray,
-    /** 行高度对应的"每分钟像素数"，仅供刻度换算使用 */
+    /** 每分钟占多少像素；整点刻度、行内半小时细线都用它换算 */
     val pxPerMinute: Float,
+    /** 整点刻度：("8:00", 距内容区顶部的像素偏移) */
+    val hourTicks: List<Pair<String, Float>> = emptyList(),
 ) {
     val contentHeight: Float get() = offsets.lastOrNull()?.plus(heights.lastOrNull() ?: 0f) ?: 0f
 
@@ -189,20 +197,47 @@ class GridGeometry(
 
     /**
      * 找出某个 y 坐标落在哪一行，返回该行第一个小节的 period.index。
-     * 落在边界或范围外时按最近一行吸附，避免"点不中"。
+     *
+     * 行的边界就是节次边界，落在两行之内的空档（例如午休）时吸附到更近的一行，
+     * 避免长按空白处新增课程时"点不中"。
      */
     fun periodAt(y: Float): Int? {
         if (rows.isEmpty()) return null
-        if (rowHeight <= 0f) return periodIndexOfRow(0)
-        val row = (y / rowHeight).toInt().coerceIn(0, rows.size - 1)
-        return periodIndexOfRow(row)
+        for (i in rows.indices) {
+            val top = offsets[i]
+            val bottom = top + heights[i]
+            if (y >= top && y <= bottom) return periodIndexOfRow(i)
+        }
+        var best = 0
+        var bestDist = Float.MAX_VALUE
+        for (i in rows.indices) {
+            val center = offsets[i] + heights[i] / 2f
+            val d = kotlin.math.abs(center - y)
+            if (d < bestDist) {
+                bestDist = d
+                best = i
+            }
+        }
+        return periodIndexOfRow(best)
     }
 
     companion object {
         /**
          * 计算排版几何。
          *
-         * @param availableHeightDp 课表内容区的可用高度（dp）。传 0 则用兜底格高。
+         * 排版口径（回到第一版的做法）：**行高按真实时长成比例**。
+         *   100 分钟的大节自然比 40 分钟的小节高，节次之间的空档也如实显示，
+         *   左侧的整点刻度因此与内容严格对齐 —— 这是课表最直观的读法。
+         *
+         * 比例系数（pxPerMinute）只看节次时长，不看节次之间的间隔：
+         *   早期版本用"间隔中位数"反推系数，被午休这种长间隔污染过
+         *   （8 小节作息里 7 个间隔 20 分钟、只有午休 170 分钟，中位数落在 170），
+         *   算出的系数被夹到下限，40 分钟的行只剩 30 dp，课名和教室挤在一起看不清。
+         *
+         * 屏幕放得下就用兜底系数（40 分钟 = 58 dp，第一版的手感）；
+         * 放不下才按可用高度压到 [GridMetrics.MIN_PX_PER_MINUTE] 为止，再放不下就滚动。
+         *
+         * @param availableHeightDp 课表内容区的可用高度（dp）。传 0 则只用兜底系数。
          */
         fun build(
             periods: List<Period>,
@@ -211,8 +246,9 @@ class GridGeometry(
         ): GridGeometry {
             if (periods.isEmpty()) {
                 return GridGeometry(
-                    emptyList(), emptyList(), GridMetrics.FALLBACK_ROW_DP,
-                    FloatArray(0), FloatArray(0), 1f,
+                    emptyList(), emptyList(),
+                    FloatArray(0), FloatArray(0),
+                    GridMetrics.FALLBACK_PX_PER_MINUTE,
                 )
             }
             val sorted = periods.sortedBy { it.index }
@@ -231,28 +267,41 @@ class GridGeometry(
                 )
             }
 
-            // 行高：屏幕放得下就按理想高度（不撑满，剩下留白），行多放不下才压缩到下限
-            val rowHeight = if (availableHeightDp > 0f) {
-                minOf(GridMetrics.TARGET_ROW_DP, availableHeightDp / rows.size)
-                    .coerceIn(GridMetrics.MIN_ROW_DP, GridMetrics.MAX_ROW_DP)
-            } else {
-                GridMetrics.FALLBACK_ROW_DP
+            val baseMinute = rows.minOf { it.startMinutes }
+            val lastMinute = rows.maxOf { it.endMinutes }
+            val spanMinutes = (lastMinute - baseMinute).coerceAtLeast(1).toFloat()
+
+            // 兜底系数（第一版手感）优先；屏幕装不下才压缩，但不再低于可读下限
+            var pxPerMinute = GridMetrics.FALLBACK_PX_PER_MINUTE
+            if (availableHeightDp > 0f) {
+                val fit = availableHeightDp / spanMinutes
+                if (fit < pxPerMinute) pxPerMinute = fit
+            }
+            pxPerMinute = pxPerMinute.coerceIn(
+                GridMetrics.MIN_PX_PER_MINUTE,
+                GridMetrics.MAX_PX_PER_MINUTE,
+            )
+
+            val offsets = FloatArray(rows.size) { (rows[it].startMinutes - baseMinute) * pxPerMinute }
+            val heights = FloatArray(rows.size) {
+                (rows[it].endMinutes - rows[it].startMinutes) * pxPerMinute
             }
 
-            val offsets = FloatArray(rows.size) { it * rowHeight }
-            val heights = FloatArray(rows.size) { rowHeight }
-
-            // 每分钟像素数：只是行高摊到时间上的换算，用于把半小时刻度放到行的正确位置
-            val rowMinutes = rows.map { (it.endMinutes - it.startMinutes).coerceAtLeast(1) }
-            val typicalMinutes = rowMinutes.sorted()[rowMinutes.size / 2].toFloat()
+            // 整点刻度：从第一个节次所在的那个整点开始，每小时一条直到最晚结束
+            val ticks = mutableListOf<Pair<String, Float>>()
+            var m = (baseMinute / 60) * 60
+            while (m <= lastMinute) {
+                ticks.add(GridClock.formatMinutesCompact(m) to (m - baseMinute) * pxPerMinute)
+                m += 60
+            }
 
             return GridGeometry(
                 periods = sorted,
                 rows = rows,
-                rowHeight = rowHeight,
                 offsets = offsets,
                 heights = heights,
-                pxPerMinute = rowHeight / typicalMinutes,
+                pxPerMinute = pxPerMinute,
+                hourTicks = ticks,
             )
         }
     }
@@ -297,19 +346,22 @@ fun computeLayout(
         val totalRows = geometry.rows.size
         if (totalRows <= 0) continue
 
-        // 课占几个小节 → 占几行（一大节两小节，所以 1 小节也算占满整行）
-        val spanRows = ((c.periodCount.coerceAtLeast(1) + GridMetrics.PERIODS_PER_BLOCK - 1) /
-            GridMetrics.PERIODS_PER_BLOCK).coerceIn(1, totalRows - row)
+        // 课占几行：按**时间**算，不能按"小节数 ÷ 每大节小节数"硬除。
+        // 例如第 1 大节（08:00-09:40）与第 3 大节（14:30-16:10）之间隔着午休，
+        // 硬除会算出"跨 2 行"，把下午那一行也涂上这门课的颜色。
+        val lastIdx = periods.indexOfFirst { it.index == c.startPeriodIndex } + c.periodCount.coerceAtLeast(1) - 1
+        val lastRow = if (lastIdx in periods.indices) geometry.rowOfPeriodIndex(periods[lastIdx].index) else row
+        val spanRows = (lastRow - row + 1).coerceIn(1, totalRows - row)
 
         for (i in 0 until spanRows) {
             occupancy[c.dayOfWeek to (row + i)] =
                 CellOccupancy(course = c, isStart = i == 0, span = spanRows)
         }
 
-        // 块的像素范围：从首行顶到末行底。行是等高的，不再有时间空档。
+        // 块的像素范围：从首行顶到末行底，中间的空档（课间、午休）一并覆盖，视觉上连续
         val top = geometry.offsetOf(row)
-        val lastRow = row + spanRows - 1
-        val bottom = geometry.offsetOf(lastRow) + geometry.heightOf(lastRow)
+        val bottomRow = row + spanRows - 1
+        val bottom = geometry.offsetOf(bottomRow) + geometry.heightOf(bottomRow)
         val left = (c.dayOfWeek - 1) * dayWidthPx
         blocks.add(
             CourseBlock(
@@ -366,39 +418,45 @@ fun ScheduleGrid(
         val viewportHeightDp = maxHeight.value
         val naturalBodyHeightDp = (viewportHeightDp - GridMetrics.HEADER_HEIGHT_DP).coerceAtLeast(0f)
 
+        // 列宽：屏幕放得下就把整宽均分给各天，放不下就按固定列宽横向滚动。
+        // 留 1 px 余量，避免 dp/px 取整后把最后一列挤出屏幕。
+        val dayWidthDp = GridMetrics.dayWidthDp(dayCount)
+        val widthForDaysDp = with(density) {
+            (viewportWidthPx - GridMetrics.GUTTER_WIDTH_DP.dp.toPx() - 1f).toDp().value
+        }.coerceAtLeast(1f)
+        val baseGridWidthDp = dayCount * dayWidthDp
+        val stretch = (widthForDaysDp / baseGridWidthDp).coerceAtLeast(1f)
+        val colWidthDp = dayWidthDp * stretch
+        val gridWidthDp = colWidthDp * dayCount
+        val colWidthPx = with(density) { colWidthDp.dp.toPx() }
+
         // 排版在拿到实际可用高度之后才算：整天尽量铺满屏幕，不写死行高
-        val layout = remember(courses, periods, week, dayCount, naturalBodyHeightDp) {
+        val layout = remember(courses, periods, week, dayCount, naturalBodyHeightDp, colWidthPx) {
             computeLayout(
                 courses = courses,
                 periods = periods,
                 week = week,
                 dayCount = dayCount,
-                dayWidthPx = GridMetrics.dayWidthDp(dayCount),
+                dayWidthPx = colWidthPx,
                 availableHeightDp = naturalBodyHeightDp,
             )
         }
         val geometry = layout.geometry
         val contentHeightDp = with(density) { geometry.contentHeight.toDp().value }
 
-        // 屏幕放得下就均分整宽，放不下就按固定列宽横向滚动
-        val dayWidthDp = GridMetrics.dayWidthDp(dayCount)
-        val baseGridWidthDp = dayCount * dayWidthDp
-        val widthForDaysDp = with(density) { (viewportWidthPx - GridMetrics.GUTTER_WIDTH_DP.dp.toPx()).toDp().value }
-        val stretch = (widthForDaysDp / baseGridWidthDp).coerceAtLeast(1f)
-        val colWidthDp = dayWidthDp * stretch
-        val gridWidthDp = colWidthDp * dayCount
-
         // 一屏放得下就正好铺满（不留滚动条），放不下才滚动
         val needsVerticalScroll = contentHeightDp > naturalBodyHeightDp + 0.5f
         val bodyHeightDp = if (needsVerticalScroll) contentHeightDp else naturalBodyHeightDp
         val needsHorizontalScroll = gridWidthDp > widthForDaysDp + 0.5f
 
-        val colWidthPx = with(density) { colWidthDp.dp.toPx() }
         val gutterTotalDp = GridMetrics.GUTTER_WIDTH_DP
         val gutterWidthPx = with(density) { GridMetrics.GUTTER_WIDTH_DP.dp.toPx() }
-        val timeLabelWidthPx = with(density) { GridMetrics.TIME_LABEL_DP.dp.toPx() }
+        /** 整点刻度占左栏最右这一条，剩下的大节时间与节次号往左排 */
+        val hourRulerWidthPx = with(density) { GridMetrics.HOUR_RULER_DP.dp.toPx() }
 
-        // 左侧栏与课表主体共用同一个纵向滚动状态：左边一滚，右边跟着滚，行才不会错位
+        // 左侧栏与星期表头共用同一个横向滚动状态：横向滑动时两者一起走，列才对得上
+        val hScroll = rememberScrollState()
+        // 左栏与课表主体共用同一个纵向滚动状态：纵向滑动时两者一起走，行才对得上
         val vScroll = rememberScrollState()
 
         Column {
@@ -407,34 +465,37 @@ fun ScheduleGrid(
                 Canvas(modifier = Modifier.width(gutterTotalDp.dp).height(GridMetrics.HEADER_HEIGHT_DP.dp)) {
                     drawRect(headerBg)
                 }
-                Canvas(modifier = Modifier.width(gridWidthDp.dp).height(GridMetrics.HEADER_HEIGHT_DP.dp)) {
-                    drawIntoCanvas { canvas ->
-                        val nc = canvas.nativeCanvas
-                        nc.drawRect(0f, 0f, size.width, size.height, Paint().apply { color = headerBg.toArgb() })
-                        strokePaint.textAlign = Paint.Align.CENTER
-                        strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                        strokePaint.textSize = 11.sp.toPx()
-                        strokePaint.color = primaryText.toArgb()
-                        val dw = colWidthPx.dp.toPx()
-                        for (d in 1..dayCount) {
-                            nc.drawText(
-                                TermCalendar.dayName(d),
-                                (d - 1) * dw + dw / 2,
-                                size.height / 2 + strokePaint.textSize / 3,
-                                strokePaint,
-                            )
+                Row(modifier = Modifier.horizontalScroll(hScroll)) {
+                    Canvas(modifier = Modifier.width(gridWidthDp.dp).height(GridMetrics.HEADER_HEIGHT_DP.dp)) {
+                        drawIntoCanvas { canvas ->
+                            val nc = canvas.nativeCanvas
+                            nc.drawRect(0f, 0f, size.width, size.height, Paint().apply { color = headerBg.toArgb() })
+                            strokePaint.textAlign = Paint.Align.CENTER
+                            strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                            strokePaint.textSize = 11.sp.toPx()
+                            strokePaint.color = primaryText.toArgb()
+                            val dw = colWidthPx.dp.toPx()
+                            for (d in 1..dayCount) {
+                                nc.drawText(
+                                    TermCalendar.dayName(d),
+                                    (d - 1) * dw + dw / 2,
+                                    size.height / 2 + strokePaint.textSize / 3,
+                                    strokePaint,
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // ── 第二行：左侧节次号 + 时间刻度 / 课表主体 ──
+            // ── 第二行：左侧栏（节次号 + 大节时间 + 整点刻度）/ 课表主体 ──
+            //    纵向的滚动状态由左栏与主体共用，两边一起滚，行才不会错位；
+            //    横向只滚课表主体，左栏留在原地当标尺。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(bodyHeightDp.dp)
-                    .then(if (needsVerticalScroll) Modifier.verticalScroll(vScroll) else Modifier)
-                    .then(if (needsHorizontalScroll) Modifier.horizontalScroll(rememberScrollState()) else Modifier),
+                    .then(if (needsVerticalScroll) Modifier.verticalScroll(vScroll) else Modifier),
             ) {
                 // ── 左栏：高度与内容区完全一致，所以节次号逐行对准 ──
                 Canvas(
@@ -449,7 +510,7 @@ fun ScheduleGrid(
                         // 左栏与课表之间的那条竖线，与右侧网格线接上
                         nc.drawLine(size.width - 0.5f, 0f, size.width - 0.5f, size.height, gutterLine)
 
-                        // 节次号：只写这一行的第一个小节号（第 1 大节就写 "1"）
+                        // 节次号：只写这一行的第一个小节号（第 1 大节就写 "1"），靠近右边的时间栏
                         val numPaint = Paint().apply {
                             isAntiAlias = true
                             textAlign = Paint.Align.RIGHT
@@ -457,7 +518,7 @@ fun ScheduleGrid(
                             textSize = 10.sp.toPx()
                             color = primaryText.toArgb()
                         }
-                        // 行时间：写清这一行是几点到几点，例如 "8:00-9:40"
+                        // 大节时间：写清这一行是几点到几点，例如 "8:00-9:40"
                         val timePaint = Paint().apply {
                             isAntiAlias = true
                             textAlign = Paint.Align.LEFT
@@ -465,23 +526,37 @@ fun ScheduleGrid(
                             textSize = 7.5.sp.toPx()
                             color = secondaryText.toArgb()
                         }
+                        // 整点刻度：8:00 / 9:00 / 10:00 … 单独一列靠最右，与右侧内容区贴边
+                        val hourPaint = Paint().apply {
+                            isAntiAlias = true
+                            textAlign = Paint.Align.RIGHT
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+                            textSize = 9.sp.toPx()
+                            color = primaryText.toArgb()
+                        }
+
+                        val timeLeft = hourRulerWidthPx
+                        val numRight = timeLeft - 2f
 
                         for ((i, row) in geometry.rows.withIndex()) {
                             val top = geometry.offsets[i]
-                            val h = geometry.heights[i]
-                            val cy = top + h / 2f
-
+                            val cy = top + geometry.heights[i] / 2f
                             // 行分隔线：和右侧网格线同高，左右一眼能对上
                             nc.drawLine(0f, top, size.width, top, gutterLine)
-
                             val num = geometry.periodIndexOfRow(i) ?: (i + 1)
-                            nc.drawText("$num", gutterWidthPx - timeLabelWidthPx - 2f, cy + numPaint.textSize / 3f, numPaint)
-                            nc.drawText(row.timeLabel, gutterWidthPx - timeLabelWidthPx, cy + timePaint.textSize / 3f, timePaint)
+                            nc.drawText("$num", numRight, cy + numPaint.textSize / 3f, numPaint)
+                            nc.drawText(row.timeLabel, timeLeft, cy + timePaint.textSize / 3f, timePaint)
+                        }
+
+                        // 整点刻度：整点正好落在课程块边界上时只补一小段，免得和行分隔线糊成一条
+                        for ((label, y) in geometry.hourTicks) {
+                            nc.drawText(label, size.width - 2f, y + hourPaint.textSize / 3f, hourPaint)
                         }
                     }
                 }
 
-                // ── 课表主体：网格与课程块都用 Canvas 自绘 ──
+                // ── 课表主体：网格与课程块都用 Canvas 自绘，横向单独滚动 ──
+                Row(modifier = Modifier.horizontalScroll(hScroll)) {
                 Canvas(
                     modifier = Modifier
                         .width(gridWidthDp.dp)
@@ -606,6 +681,7 @@ fun ScheduleGrid(
                             }
                         }
                     }
+                }
                 }
             }
         }
