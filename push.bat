@@ -75,10 +75,13 @@ if not errorlevel 1 (
 )
 if !TRY! lss 8 (
   echo       failed, retrying in 3 s ...
-  rem "< nul" matters: when this script is run with stdin redirected (e.g. from
-  rem a harness shell), timeout.exe aborts with "Input redirection is not
-  rem supported" and the intended 3 s pause degrades into an instant retry.
-  timeout /t 3 /nobreak < nul >nul
+  rem Do NOT use "timeout /t 3": timeout.exe refuses to run whenever stdin is
+  rem redirected ("ERROR: Input redirection is not supported"), and redirecting
+  rem stdin from nul does not help either - it is still a redirection. Measured
+  rem here: the 3 s pause silently became an instant retry, so all 8 attempts
+  rem fired within a second. ping's delay works regardless of stdin.
+  rem -n 4 = 3 intervals of about 1 s each.
+  ping -n 4 127.0.0.1 >nul 2>&1
   goto attempt
 )
 
