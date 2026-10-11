@@ -4,6 +4,8 @@
 
 > 当前版本 **0.4.0**（versionCode 4）· 2026-10-11
 > 状态：M1 + M2 已完成，APK 可安装使用；M3（提醒）起待开发。详见[计划文档](单机版安卓课表App-计划文档.md)。
+>
+> 仓库：<https://github.com/sumu0308/class-schedule>
 
 ---
 
@@ -17,6 +19,7 @@
 - [技术栈](#技术栈)
 - [踩过的坑（重要）](#踩过的坑重要)
 - [文档](#文档)
+- [提交到 GitHub](#提交到-github)
 - [更新记录](#更新记录)
 - [路线图](#路线图)
 - [范围外（明确不做）](#范围外明确不做)
@@ -152,13 +155,18 @@ class-schedule/
 │     │     ├─ TermCalendar.kt          epochDay ↔ 日期 ↔ 第几周
 │     │     └─ GridClock.kt             时间字符串 ↔ 分钟换算
 │     ├─ test/java/com/classschedule/app/
-│     │  ├─ WeekRangesCalcTest.kt       20 个用例：周次与日期换算
-│     │  └─ GridGeometryTest.kt         15 个用例：行高比例与点击定位
+│     │  ├─ WeekRangesCalcTest.kt       20 个用例：周次解析与日期换算
+│     │  ├─ GridGeometryTest.kt         20 个用例：行高比例与点击定位
+│     │  └─ PeriodBlockTest.kt          10 个用例：大节划分与作息间隔
 │     └─ main/res/                      图标、主题、字符串
-├─ tools/                               环境与诊断脚本（Node.js）
+├─ tools/                               环境、诊断与核对脚本（Node.js）
+│  ├─ wifi-share.mjs                    局域网传包服务器
+│  ├─ verify-layout-math.mjs            排版数值独立复算
+│  └─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
 ├─ gradle/libs.versions.toml            依赖版本集中管理
 ├─ build.bat / serve-apk.bat            一键打包 / 局域网传包
 ├─ 单机版安卓课表App-计划文档.md          需求与技术方案
+├─ 如何传到手机.md                        三种传输方式与排查顺序
 └─ 第一版问题.md                         用户实测反馈与处理记录
 ```
 
@@ -202,6 +210,7 @@ class-schedule/
 | `Failed to find target with hash string 'android-37.0-ext2'` | AGP 9.4.1 期望的平台目录名与实际发布的 `platforms/android-37.2` 命名体系不一致 | 锁定 `compileSdk 36` + 配套版本的 AndroidX（版本目录里写了注释说明） |
 | `validateSigningRelease` 报 `AccessDeniedException` | 调试密钥库默认位于 `C:\Users\<用户>\.android\`，受限环境下不可写 | 密钥库移入项目 `.keystore/`，构建脚本用推导出的绝对路径引用，项目可整体迁移 |
 | Gradle 报 `Couldn't open current thread, error = 5` | 文件监视器在受限环境下无法工作 | 无害警告，不影响构建结果 |
+| `git push` 报 `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS` | git 默认用 Windows schannel 做 TLS，在受限环境下取不到客户端凭据（与账号密码无关，握手前就失败） | 本仓库配置 `git config http.sslBackend openssl`，改用自带的 OpenSSL |
 
 ---
 
@@ -211,6 +220,27 @@ class-schedule/
 | --- | --- |
 | [单机版安卓课表App-计划文档.md](单机版安卓课表App-计划文档.md) | 产品目标与范围、功能清单、技术栈、数据模型、导入方案、页面流程、里程碑、风险与待确认问题 |
 | [第一版问题.md](第一版问题.md) | 第一版实测反馈与逐条处理记录 |
+| [如何传到手机.md](如何传到手机.md) | 三种把 APK 传到手机的方式与打不开时的排查顺序 |
+
+---
+
+## 提交到 GitHub
+
+仓库：<https://github.com/sumu0308/class-schedule>（公开）
+
+```bat
+git add -A
+git commit -m "说明这次改了什么"
+git push
+```
+
+推送后可以核对远程内容和本地是否一致（会逐个文件比对内容，并检查有没有误传构建产物）：
+
+```bat
+node tools/verify-remote.mjs
+```
+
+内容只包括源码、文档与脚本；`.android-sdk/`（约 790 MB）、`.gradle-home/`（约 1.7 GB）、构建产物与 APK 都由 `.gitignore` 排除，克隆后按[自己构建](#自己构建开发者)一节重新生成即可。
 
 ---
 
