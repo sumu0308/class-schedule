@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 用 Compose 自带主题，这里只保留启动窗口背景，避免冷启动时白屏突兀 -->
+    <style name="Theme.ClassSchedule" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
