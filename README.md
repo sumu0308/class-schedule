@@ -165,6 +165,7 @@ class-schedule/
 │  └─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
 ├─ gradle/libs.versions.toml            依赖版本集中管理
 ├─ build.bat / serve-apk.bat            一键打包 / 局域网传包
+├─ push.bat                             推送到 GitHub（带重试与自动核对）
 ├─ 单机版安卓课表App-计划文档.md          需求与技术方案
 ├─ 如何传到手机.md                        三种传输方式与排查顺序
 └─ 第一版问题.md                         用户实测反馈与处理记录
@@ -255,6 +256,31 @@ node tools/verify-remote.mjs
 ## 更新记录
 
 本文件随每次改动同步更新，并在核对代码与产物后提交。
+
+### 上传到 GitHub — 2026-10-11
+
+**改动：建立公开仓库并推送，新增推送与核对脚本**
+
+仓库：<https://github.com/sumu0308/class-schedule>（公开，54 个文件，约 3 MB）
+
+- 新增 `push.bat`：把 gh 的令牌接进推送 URL 并清空凭据助手链（令牌不写进 `.git/config`），失败自动重试最多 8 次，推送后自动跑一次远程核对
+- 新增 `tools/verify-remote.mjs`：从 GitHub API 读回远程文件与本地逐字节比对，并统计文件数、检查是否误传 APK 与 SDK 缓存
+- `.gitignore` 补上 `.gradle/`（项目根的 Gradle 增量构建状态，之前只排除了 `.gradle-home/` 发行版缓存，两者不是一回事）
+- README 补上仓库地址、「提交到 GitHub」一节，并修正项目结构里过时的测试清单（漏了 `PeriodBlockTest.kt`，`GridGeometryTest.kt` 的用例数 15 已增至 20）
+
+**排查过程中走过的弯路（如实记录）**
+
+推送一直失败，我先把它当成认证问题，绕了三圈：
+
+| 尝试 | 结果 |
+| --- | --- |
+| `gh repo create --push` 报 `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS` | 改用 `http.sslBackend=openssl`，**这条是有效的**，此后 TLS 层不再报错 |
+| 配 `credential.helper "!gh auth git-credential"`，仍要手输用户名 | 写 `.cmd`、再写 `.ps1` 版助手，助手单独测都能取到令牌，但 git 始终不用它们 |
+| 查 `GIT_TRACE` 才看清：每个助手都要经 `sh.exe -c` 启动，而**本机 `sh.exe` 直接崩溃**（`couldn't create signal pipe, Win32 error 5`，退出码 `0xC0000142`） | 结论：这台机器的 git 用不了**任何**凭据助手 |
+
+**真正的根因其实与认证无关**：`github.com:443` 连接不稳定，实测 3 次里 2 次超时（21 秒），成功那次只要 1.3 秒；而 `api.github.com` 一直稳定（730 ms）。`push.bat` 的重试就是针对这一点——**遇到这种超时不要往账号密码方向查**。
+
+顺带发现并修正：初始化时的 `git add -A` 把我写提交信息用的临时文件 `commit-msg.txt` 一起提交了，已从提交中移除。
 
 ### 0.4.0 — 2026-10-11
 
