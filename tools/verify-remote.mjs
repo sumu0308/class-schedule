@@ -11,13 +11,73 @@ const REPO = process.argv[2] ?? 'sumu0308/class-schedule';
 const API = `https://api.github.com/repos/${REPO}`;
 const DEFAULT_BRANCH = 'main';
 
+// ---------------------------------------------------------------------------
+// 取令牌
+// ---------------------------------------------------------------------------
+// 为什么必须带令牌：匿名访问 api.github.com 只有 60 次/小时，本脚本一轮就要十几次
+// （对象树 + 每个抽查文件的读重试），跑几轮就会撞上
+// `HTTP 403 rate limit exceeded`——而这跟"仓库内容对不对"毫无关系，纯属误报。
+// 走 gh 的令牌则有 5000 次/小时。
+//
+// 为什么不直接把 gh 的输出用管道读回来：DSH 沙箱禁止 Node 以「管道」方式
+// spawn 子进程（spawnSync EPERM）。所以统一把子进程 stdout 接到文件句柄上再读。
+const { spawnSync } = await import('node:child_process');
+const { openSync, readFileSync, mkdtempSync, rmSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+
+const scratchDir = mkdtempSync(join(tmpdir(), 'verify-remote-'));
+let scratchSeq = 0;
+
+/** 跑一条命令，把 stdout 收到临时文件再读（避开沙箱的管道限制）。 */
+function capture(command, args) {
+  const file = join(scratchDir, `out-${scratchSeq++}.txt`);
+  const fd = openSync(file, 'w');
+  const r = spawnSync(command, args, { stdio: ['ignore', fd, 'inherit'] });
+  const text = readFileSync(file, 'utf8');
+  if (r.error) throw new Error(`${command} 起不来：${r.error.code ?? r.error.message}`);
+  if (r.status !== 0) throw new Error(`${command} ${args.join(' ')} 退出码 ${r.status}`);
+  return text.trim();
+}
+
+let TOKEN = null;
+try {
+  TOKEN = capture('gh', ['auth', 'token']) || null;
+} catch {
+  TOKEN = null;
+}
+console.log(
+  TOKEN
+    ? '（已用 gh 令牌访问 API，配额 5000 次/小时）'
+    : '（未取到 gh 令牌，改用匿名访问；匿名配额只有 60 次/小时，可能中途报限流）',
+);
+
+function headers() {
+  const h = { 'User-Agent': 'class-schedule-verify', Accept: 'application/vnd.github+json' };
+  if (TOKEN) h.Authorization = `Bearer ${TOKEN}`;
+  return h;
+}
+
+// 最后一层保险：无论如何都要退出，不要让未处理的拒绝把 libuv 拖到断言崩溃
+// （见过 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`）。
+process.on('uncaughtException', (e) => {
+  console.error(`\n未预期的错误：${e.message}`);
+  process.exit(1);
+});
+process.on('unhandledRejection', (e) => {
+  console.error(`\n未预期的错误：${e?.message ?? e}`);
+  process.exit(1);
+});
+
 async function api(path) {
   // cache: 'no-store' 很关键：刚 push 完就读，不加这个可能读回 CDN 缓存的旧内容，
   // 于是核对结果会假报"与本地不一致"。
-  const r = await fetch(API + path, {
-    cache: 'no-store',
-    headers: { 'User-Agent': 'class-schedule-verify', Accept: 'application/vnd.github+json' },
-  });
+  const r = await fetch(API + path, { cache: 'no-store', headers: headers() });
+  if (r.status === 403 && r.headers.get('x-ratelimit-remaining') === '0') {
+    const reset = Number(r.headers.get('x-ratelimit-reset') ?? 0);
+    const when = reset ? new Date(reset * 1000).toLocaleString() : '未知';
+    throw new Error(`API 限流（配额 ${r.headers.get('x-ratelimit-limit')}，${when} 重置）— ${path}`);
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} — ${path}`);
   return r.json();
 }
@@ -31,6 +91,8 @@ async function readRemoteText(filePath, attempts = 4) {
       return Buffer.from(meta.content, 'base64').toString('utf8');
     } catch (e) {
       last = e;
+      // 限流重试没意义，直接抛出，别把真实原因盖掉
+      if (/限流/.test(e.message)) throw e;
       await new Promise((r) => setTimeout(r, 400 * (i + 1)));
     }
   }
@@ -81,7 +143,6 @@ for (const [k, v] of [...top.entries()].sort((a, b) => b[1] - a[1])) {
 
 line(`\n【关键文件内容抽查（从 GitHub 下载，与本地比对）】`);
 const { readFile } = await import('node:fs/promises');
-const { execFileSync } = await import('node:child_process');
 const checks = [
   ['README.md', 'README.md', '单机版安卓课表 App'],
   ['app/src/main/java/com/classschedule/app/ui/ScheduleGrid.kt', 'ScheduleGrid.kt', 'TARGET_TYPICAL_ROW_DP'],
@@ -102,44 +163,30 @@ for (const [remotePath, label, mustContain] of checks) {
 }
 
 // 本地是否有已提交但还没推送的改动 —— 这类"不一致"最容易让人白查半天。
-// 但注意：DSH 沙箱不允许 Node 以管道方式启动子进程，git 会以 spawnSync EPERM 失败。
-// 那是环境限制、不是"本地和远程不一致"，所以要区分对待，不能报警。
-let gitReady = true;
+// 走 capture()（stdio 接文件句柄），所以在 DSH 沙箱里也能读到 git 的输出。
 try {
-  execFileSync('git', ['--version'], { encoding: 'utf8' });
-} catch {
-  gitReady = false;
-}
-
-if (gitReady) {
-  try {
-    const localHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
-    const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-    localTrackedCount = tracked.length;
-    const sameCommit = localHead === head.sha;
-    line(`\n【本地与远程的同步状态】`);
-    line(`  本地 HEAD : ${localHead.slice(0, 7)}`);
-    line(`  远程 HEAD : ${head.sha.slice(0, 7)}`);
-    line(`  ${sameCommit ? '✓ 提交一致' : '✗ 提交不一致 —— 本地有未推送的提交'}`);
-    line(`  本地跟踪文件: ${localTrackedCount} 个${localTrackedCount === files.length ? '（与远程一致）' : '（与远程不一致 ✗）'}`);
-    if (localTrackedCount !== files.length) allOk = false;
-    line(`  ${dirty ? '✗ 工作区有未提交的改动：' : '✓ 工作区干净'}`);
-    if (dirty) for (const l of dirty.split('\n').slice(0, 8)) line(`      ${l}`);
-    if (!sameCommit) allOk = false;
-  } catch (e) {
-    // 不吞错误：以前这里静默显示"不是 git 仓库"，把真正的失败原因藏掉了
-    line(`\n【本地与远程的同步状态】`);
-    line(`  ! 读取本地 git 状态失败：${e.message.split('\n')[0]}`);
-    line(`    无法判断"是否有未推送的提交"；远程内容核对不受影响。`);
-    line(`    常见原因：DSH 沙箱禁止 Node 以管道方式启动子进程（EPERM）。`);
-  }
-} else {
+  const localHead = capture('git', ['rev-parse', 'HEAD']);
+  const dirty = capture('git', ['status', '--porcelain']);
+  const tracked = capture('git', ['ls-files']).split('\n').filter(Boolean);
+  localTrackedCount = tracked.length;
+  const sameCommit = localHead === head.sha;
   line(`\n【本地与远程的同步状态】`);
-  line(`  ! 本环境起不了 git 子进程（DSH 沙箱限制），跳过"是否有未推送提交"的检查`);
-  line(`    如需确认：在本机终端里跑 git status / git log origin/main..HEAD`);
+  line(`  本地 HEAD : ${localHead.slice(0, 7)}`);
+  line(`  远程 HEAD : ${head.sha.slice(0, 7)}`);
+  line(`  ${sameCommit ? '✓ 提交一致' : '✗ 提交不一致 —— 本地有未推送的提交'}`);
+  line(`  本地跟踪文件: ${localTrackedCount} 个${localTrackedCount === files.length ? '（与远程一致）' : '（与远程不一致 ✗）'}`);
+  if (localTrackedCount !== files.length) allOk = false;
+  line(`  ${dirty ? '✗ 工作区有未提交的改动：' : '✓ 工作区干净'}`);
+  if (dirty) for (const l of dirty.split('\n').slice(0, 8)) line(`      ${l}`);
+  if (!sameCommit) allOk = false;
+} catch (e) {
+  // 不吞错误：以前这里静默显示"不是 git 仓库"，把真正的失败原因藏掉了
+  line(`\n【本地与远程的同步状态】`);
+  line(`  ! 读取本地 git 状态失败：${e.message.split('\n')[0]}`);
+  line(`    无法判断"是否有未推送的提交"；远程内容核对不受影响。`);
 }
 
 rule();
 line(allOk ? '全部核实通过' : '存在不一致，需要检查');
+rmSync(scratchDir, { recursive: true, force: true });
 process.exit(allOk ? 0 : 1);
