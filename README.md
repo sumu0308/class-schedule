@@ -165,6 +165,7 @@ class-schedule/
 │  ├─ wifi-share.mjs                    局域网传包服务器
 │  ├─ verify-layout-math.mjs            排版数值独立复算
 │  ├─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
+│  ├─ fix-broken-messages.mjs           修复被引号吃掉的提交信息（一次性工具）
 │  └─ （其余为版本探测、镜像探测等调试脚本，见 tools/ 目录）
 ├─ gradle/libs.versions.toml            依赖版本集中管理
 ├─ build.bat / serve-apk.bat            一键打包 / 局域网传包
@@ -242,9 +243,16 @@ push.bat
 **为什么要用 `push.bat` 而不是直接 `git push`**：这台机器到 `github.com:443` 的连接不稳定（实测约 1/3 概率超时，成功时 1～10 秒），而系统里 git 自带的凭据助手也起不来（每个助手都要经 `sh.exe` 启动，而 `sh.exe` 在本机直接崩溃 `couldn't create signal pipe, Win32 error 5`）。`push.bat` 把令牌接进 URL 并绕开凭据助手，失败自动重试最多 8 次：
 
 ```
-push.bat                → 推送到 main
-push.bat -m "改动说明"    → 先提交全部改动再推送
+push.bat                     → 推送到 main
+push.bat -m "改动说明"        → 先提交全部改动再推送
+set FORCE=1 & push.bat       → force-with-lease（只在重写过历史后用）
 ```
+
+> **从 PowerShell 调用时注意**：不要写成 `cmd /c "push.bat -m \"说明\""` —— 嵌套引号会被解析掉，提交信息会变成一个双引号字符（这件事真的发生过，三个提交的信息都成了 `"`）。请用参数数组，让 PowerShell 自己负责加引号：
+>
+> ```powershell
+> & cmd.exe /c .\push.bat -m '一句话说明'
+> ```
 
 推送后核对远程内容和本地是否一致（逐文件比对，并检查有没有误传构建产物）：
 
@@ -252,12 +260,13 @@ push.bat -m "改动说明"    → 先提交全部改动再推送
 node tools/verify-remote.mjs
 ```
 
-核对脚本会输出四项：仓库概况、最新提交、文件统计与顶层结构、关键文件内容抽查。两种容易被误判成"出问题了"的情况，这里先说明：
+核对脚本会输出五项：仓库概况、最新提交、文件统计与顶层结构、关键文件内容抽查、本地与远程的同步状态。三种容易被误判成"出问题了"的情况，这里先说明：
 
 | 现象 | 真实含义 |
 | --- | --- |
 | 刚推送完就核对，某个文件报"与本地一致=false" | **多半是 GitHub 读取延迟**，不是真的不一致。脚本已内置带 cache-buster 的重试；若仍报，等十几秒重跑一次再判断 |
-| 报 `! 本环境起不了 git 子进程（DSH 沙箱限制），跳过…` | 这是**沙箱限制**（DSH 不允许 Node 以管道方式启动子进程，报 `spawnSync git EPERM`），与远程内容无关，不影响核对结论。想确认有没有未推送的提交，在本机终端跑 `git log origin/main..HEAD` |
+| 报 `API 限流（配额 60 …）` | 脚本没拿到 gh 令牌、退回了匿名访问。匿名只有 60 次/小时，而一轮核对要十几次，很容易撞上。确认 `gh auth status` 正常即可（有令牌时是 5000 次/小时） |
+| 报 `✗ 提交不一致 —— 本地有未推送的提交` | 这是**真的**，说明本地有提交还没推。跑一次 `push.bat` 即可 |
 
 内容只包括源码、文档与脚本；`.android-sdk/`（约 790 MB）、`.gradle-home/`（约 1.7 GB）、构建产物与 APK 都由 `.gitignore` 排除，克隆后按[自己构建](#自己构建开发者)一节重新生成即可。
 
@@ -292,16 +301,24 @@ node tools/verify-remote.mjs
 
 顺带发现并修正：初始化时的 `git add -A` 把我写提交信息用的临时文件 `commit-msg.txt` 一起提交了，已从提交中移除。
 
-### 核对脚本加固 — 2026-10-11
+### 推送链路加固 — 2026-10-11
 
-**改动：让 `verify-remote.mjs` 不再假报警**
+**改动：修掉提交信息被吞、重试间隔失效、押核脚本限流三处问题**
 
-第一次跑核对时它报 `README.md 与本地一致=false`，看着像推送漏了文件。查下来是**读取延迟**：GitHub 的 contents 接口在刚 push 完的一小段时间里可能返回旧内容。于是：
+核对脚本第一次跑就报 `README.md 与本地一致=false`，看着像推送漏了文件。查下来是**读取延迟**：GitHub 的 contents 接口在刚 push 完的一小段时间里可能返回旧内容。顺着这条线又查出三个真问题：
 
-- 文件读取加 `?cb=<时间戳>` 打散缓存，失败时退避重试 4 次（`readRemoteText`）
-- 「同步状态」一节区分两类失败：**真的不一致**（提交号不同 / 跟踪文件数不同）才判失败；**环境起不了 git 子进程**只提示、不影响结论。之前它用 `catch {}` 静默显示"当前目录不是 git 仓库"，把真实原因藏住了——现在会打印 `spawnSync git EPERM` 并说明是沙箱限制
-- 文件数不再写死在输出里（原来印着"本地 git 跟踪 52 个"，早已过时，现在两边都动态取值并互相比对）
-- README 的「提交到 GitHub」一节补上这两种误判的对照表
+| 问题 | 症状 | 修法 |
+| --- | --- | --- |
+| 从 PowerShell 调 `push.bat -m "说明"` | 嵌套引号被解析掉，**三个提交的信息都变成了一个 `"` 字符** | `push.bat` 里写明正确调用方式；已用 `tools/fix-broken-messages.mjs` 按完整哈希把那三个提交的信息改回来（只换 message，tree 与 parent 不变） |
+| `timeout /t 3 /nobreak >nul` | stdin 被重定向时 `timeout.exe` 直接报 `Input redirection is not supported` 退出，**3 秒等待退化成立刻重试**，8 次重试几百毫秒就打完了 | 改成 `< nul >nul` |
+| 核对脚本走匿名 API | 匿名只有 60 次/小时，而一轮核对要十几次，跑几轮就 `HTTP 403 rate limit exceeded`，**与仓库内容对不对毫无关系** | 改用 `gh` 令牌（5000 次/小时），取不到才退回匿名并明确提示 |
+
+另外两处顺带改好：
+
+- 核对脚本读本地 git 状态时不再受沙箱限制。原以为是"沙箱禁子进程"，实际是**禁管道**——把子进程 stdout 接到临时文件句柄上就能读，于是"本地是否有未推送提交"这项恢复工作，不再降级跳过
+- 补上 `uncaughtException` / `unhandledRejection` 处理：之前限流抛错时 Node 会以 libuv 断言崩溃（`UV_HANDLE_CLOSING`）退出，连结论都不打印
+
+`tools/fix-broken-messages.mjs` 的一个设计取舍：**待修提交按完整哈希写死**，不按"信息内容"匹配。因为那几个提交的信息都只是一个 `"`，光看内容根本分不出谁是谁——按内容模糊匹配很容易改错对象。
 
 ### 0.4.0 — 2026-10-11
 

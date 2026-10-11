@@ -51,11 +51,19 @@ if "!TOK!"=="" (
 set "URL=https://x-access-token:!TOK!@github.com/sumu0308/class-schedule.git"
 set "TRY=0"
 set "OK="
-rem Set FORCE=1 to replace rewritten history. --force-with-lease is used (not --force):
-rem it refuses if the remote moved since our last fetch, so it cannot silently
-rem discard someone else's commits.
+rem Set FORCE=1 to replace rewritten history.
+rem
+rem Why the lease value is spelled out instead of just --force-with-lease:
+rem a bare --force-with-lease compares against the remote-tracking ref, and this
+rem clone never fetched, so it always answered "stale info". Reading the remote
+rem SHA with ls-remote and passing it as the expectation is explicit and does not
+rem depend on tracking refs. It still refuses if the remote moved in between.
 set "FORCEARG="
-if defined FORCE set "FORCEARG=--force-with-lease"
+if defined FORCE (
+  for /f "usebackq delims=" %%R in (`git ls-remote origin refs/heads/main`) do set "LEASESHA=%%R"
+  for /f "tokens=1" %%S in ("!LEASESHA!") do set "LEASESHA=%%S"
+  set "FORCEARG=--force-with-lease=main:!LEASESHA!"
+)
 
 :attempt
 set /a TRY+=1
