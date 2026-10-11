@@ -22,6 +22,17 @@ object GridClock {
         return "%02d:%02d".format(t / 60, t % 60)
     }
 
+    /**
+     * 480 → "8:00"（去掉小时的补零）。
+     *
+     * 课表左边的时间刻度栏很窄，`08:00` 里那个前导零纯属浪费宽度；
+     * 弹窗里的时间输入仍然用 [formatMinutes] 的 `08:00`，便于对齐阅读。
+     */
+    fun formatMinutesCompact(total: Int): String {
+        val t = ((total % 1440) + 1440) % 1440
+        return "%d:%02d".format(t / 60, t % 60)
+    }
+
     /** 解析失败或时间倒置时返回 false，用于输入校验 */
     fun isValidRange(start: String, end: String): Boolean {
         val s = minutesOf(start)

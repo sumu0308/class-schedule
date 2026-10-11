@@ -127,7 +127,7 @@ class GridGeometryTest {
         val g = GridGeometry.build(periods)
         // 08:00 到 18:10 跨越约 610 分钟 → 约 21 条刻度
         assertTrue("刻度数量应在合理范围，实际 ${g.rulerTicks.size}", g.rulerTicks.size in 15..25)
-        assertEquals("08:00", g.rulerTicks.first().first)
+        assertEquals("8:00", g.rulerTicks.first().first)
         assertEquals(0f, g.rulerTicks.first().second, 0.01f)
     }
 
@@ -206,12 +206,22 @@ class GridGeometryTest {
     }
 
     @Test
+    fun `整天正好铺满可用高度`() {
+        // 课表是拿来"一眼看全一天"的：可用高度给多少，整天就该占多少，不该需要滚动
+        val available = 610f
+        val g = GridGeometry.build(realTimetable, availableHeightDp = available)
+
+        assertEquals("整天应正好占满可用高度", available, g.contentHeight, 1f)
+    }
+
+    @Test
     fun `实测当前算法在本作息下的取值（用于核对文档断言）`() {
-        val g = GridGeometry.build(realTimetable, availableHeightDp = 700f)
-        // 这三个数被 README 与计划文档引用，改动算法时这里会失败，提醒同步文档
-        assertEquals("比例系数", 2.0f, g.pxPerMinute, 0.001f)
-        assertEquals("40 分钟行高", 80.0f, g.heights[0], 0.5f)
-        assertEquals("40 分钟行的课名字号", 12f, GridMetrics.nameTextSizeSp(g.heights[0], 1f), 0.001f)
+        // 三个数被下方断言写死：改动算法时这里会失败，提醒同步文档
+        val g = GridGeometry.build(realTimetable, availableHeightDp = 610f)
+        assertEquals("比例系数", 1.0f, g.pxPerMinute, 0.001f)
+        assertEquals("40 分钟行高", 40.0f, g.heights[0], 0.5f)
+        // 610 分钟撑满 610 dp 时，40 分钟的格子约 40 dp 高，字号落在 9 sp 档
+        assertEquals("40 分钟行的课名字号", 9f, GridMetrics.nameTextSizeSp(g.heights[0], 1f), 0.001f)
     }
 
     private fun shiftMinutes(time: String, delta: Int): String =

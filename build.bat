@@ -1,20 +1,19 @@
 @echo off
 @rem ============================================================
-@rem  课表 App 一键打包
-@rem  双击本文件即可生成 APK，不需要装 Android Studio。
-@rem  产物：app\build\outputs\apk\release\app-release.apk
+@rem  One-click build -- produces app\build\outputs\apk\release\app-release.apk
+@rem  Double-click this file; Android Studio is not needed.
 @rem ============================================================
 setlocal
 
 cd /d "%~dp0"
 
-@rem JDK：默认用系统已有的；如果你的 JDK 装在别处，改这一行
+@rem JDK: uses the system one by default; edit this line if yours is elsewhere
 if not defined JAVA_HOME set "JAVA_HOME=D:\JDK\jdk21"
 
-@rem 把 Gradle 的缓存放在项目内，避免占用 C 盘，也方便整体迁移
+@rem Keep the Gradle cache inside the project (no C: usage, easy to move)
 set "GRADLE_USER_HOME=%~dp0.gradle-home"
 
-@rem Android SDK 也在项目内
+@rem Android SDK also lives inside the project
 set "ANDROID_HOME=%~dp0.android-sdk"
 set "ANDROID_SDK_ROOT=%~dp0.android-sdk"
 
@@ -42,7 +41,7 @@ if not exist "gradlew.bat" (
 )
 
 if "%~1"=="" (
-  @rem 默认打正式包（release）；想打调试包就执行：build.bat debug
+  @rem default: release build. Use "build.bat debug" for a debug build.
   set "TASK=assembleRelease"
 ) else if /i "%~1"=="debug" (
   set "TASK=assembleDebug"
