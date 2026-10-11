@@ -19,6 +19,14 @@ rem
 rem USAGE
 rem   push.bat                 push to main
 rem   push.bat -m "message"    commit all changes first, then push
+rem   set FORCE=1 & push.bat   force-with-lease (only after rewriting history)
+rem
+rem NOTE ON CALLING THIS FROM POWERSHELL
+rem   Passing the message through a nested cmd /c "..." string mangles the
+rem   quotes: the commit ends up with a message of just a double quote.
+rem   That really happened to three commits here. Call it with an argument
+rem   array instead, so PowerShell does the quoting:
+rem     & cmd.exe /c .\push.bat -m 'a message with spaces'
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -33,7 +41,6 @@ if defined MSG (
 ) else (
   echo [1/3] No -m given, pushing what is already committed
 )
-
 for /f "usebackq delims=" %%T in (`gh auth token`) do set "TOK=%%T"
 if "!TOK!"=="" (
   echo ERROR: could not get a token from "gh auth token".
@@ -44,18 +51,26 @@ if "!TOK!"=="" (
 set "URL=https://x-access-token:!TOK!@github.com/sumu0308/class-schedule.git"
 set "TRY=0"
 set "OK="
+rem Set FORCE=1 to replace rewritten history. --force-with-lease is used (not --force):
+rem it refuses if the remote moved since our last fetch, so it cannot silently
+rem discard someone else's commits.
+set "FORCEARG="
+if defined FORCE set "FORCEARG=--force-with-lease"
 
 :attempt
 set /a TRY+=1
-echo [2/3] Push attempt !TRY! of 8 ...
-git -c credential.helper= -c http.sslBackend=openssl push "!URL!" main:main
+echo [2/3] Push attempt !TRY! of 8 ... !FORCEARG!
+git -c credential.helper= -c http.sslBackend=openssl push !FORCEARG! "!URL!" main:main
 if not errorlevel 1 (
   set "OK=1"
   goto done
 )
 if !TRY! lss 8 (
   echo       failed, retrying in 3 s ...
-  timeout /t 3 /nobreak >nul
+  rem "< nul" matters: when this script is run with stdin redirected (e.g. from
+  rem a harness shell), timeout.exe aborts with "Input redirection is not
+  rem supported" and the intended 3 s pause degrades into an instant retry.
+  timeout /t 3 /nobreak < nul >nul
   goto attempt
 )
 
