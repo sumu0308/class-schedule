@@ -124,7 +124,8 @@ build.bat
 | `build.bat test` | 只跑单元测试 |
 | `build.bat clean` | 清理后重新打包 |
 | `serve-apk.bat` | 在局域网内共享 APK，手机浏览器直接下载 |
-| `push.bat` | 把改动提交并推送到 GitHub（失败自动重试，推送后自动核对） |
+| `push.bat` | 把改动提交并推送到 GitHub（失败自动重试；重试仍不通则自动改走 GitHub API 兜底） |
+| `node tools\push-auto.mjs` | 推送工具本体：先试 `git push`，不通就改走 Git Data API 重建提交，最后自动核对（`--dry-run` 只演练、不改远端） |
 
 也可以直接用 Gradle：`gradlew.bat assembleRelease`、`gradlew.bat testDebugUnitTest`。
 
@@ -185,7 +186,8 @@ class-schedule/
 │  ├─ setup-gradle-wrapper.mjs          准备 Gradle 与 wrapper
 │  ├─ wifi-share.mjs                    局域网传包服务器
 │  ├─ verify-layout-math.mjs            排版数值独立复算
-│  └─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
+│  ├─ verify-remote.mjs                 核对 GitHub 上的内容与本地一致
+│  └─ push-auto.mjs                     推送：git push 不通时自动改走 GitHub API
 ├─ gradle/libs.versions.toml            依赖版本集中管理
 ├─ build.bat / serve-apk.bat            一键打包 / 局域网传包
 ├─ push.bat                             推送到 GitHub
@@ -221,7 +223,7 @@ class-schedule/
 
 ## 构建踩过的坑
 
-这些是在真实环境（Windows 11 + 校园网/手机热点，代理软件未启动）里踩到并已修复的问题。它们**不影响你使用 App，但影响你构建**，所以记录下来。
+这些是在真实环境（Windows 11 + 校园网/手机热点，代理软件未启动；其中一条来自带沙箱代理的开发环境）里踩到并已修复的问题。它们**不影响你使用 App，但影响你构建**，所以记录下来。
 
 | 现象 | 根因 | 处理方式 |
 | --- | --- | --- |
@@ -233,7 +235,8 @@ class-schedule/
 | `Failed to find target with hash string 'android-37.0-ext2'` | AGP 9.4.1 期望的平台目录名与实际发布的 `platforms/android-37.2` 命名体系不一致 | 锁定 `compileSdk 36` + 配套版本的 AndroidX（版本目录里写了注释说明） |
 | `validateSigningRelease` 报 `AccessDeniedException` | 调试密钥库默认位于 `C:\Users\<用户>\.android\`，受限环境下不可写 | 密钥库移入项目 `.keystore/`，构建脚本用推导出的绝对路径引用，项目可整体迁移 |
 | `git push` 报 `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS` | git 默认用 Windows schannel 做 TLS，在受限环境下取不到客户端凭据（与账号密码无关，握手前就失败） | 本仓库配置 `git config http.sslBackend openssl`，改用自带的 OpenSSL |
-| `git push` 报 `Failed to connect to github.com:443 after 21000 ms`，但同一条命令重试就好了 | 本机到 `github.com:443` 的连接不稳定（实测约 1/3 概率超时）；`api.github.com` 一直稳定 | 用 `push.bat` 推送，失败会自动重试；别把这种超时误判成账号或密码问题 |
+| `git push` 报 `Failed to connect to github.com:443 after 21000 ms`，但同一条命令重试就好了 | 本机到 `github.com:443` 的连接不稳定（实测约 1/3 概率超时）；`api.github.com` 一直稳定 | 用 `push.bat` 推送，失败会自动重试；重试仍不通则由 `push-auto.mjs` 走 API 兜底；别把这种超时误判成账号或密码问题 |
+| `git push` 报 `CONNECT tunnel failed, response 502`，**怎么重试都不行** | 环境给 https 请求注入了代理，且代理按**域名白名单**放行：`api.github.com` 常通，`github.com:443` 却在"放行"与 502 之间来回切（实测同一会话内先连续 502、后连续 200）；想绕开代理直连又被拦住（20 s 超时）。而 `git push` 只能走 `github.com:443`，成败全看那一刻代理是否放行 | 重试无济于事，改走 API：`tools/push-auto.mjs` 经 `api.github.com` 用 Git Data API 重建提交，逐层校验 blob / tree / commit 的 SHA 与本地一致才更新远端 ref（不会造成分叉）。`push.bat` 在 8 次重试后会自动调用它，也可直接 `node tools/push-auto.mjs` |
 | Gradle 报 `Couldn't open current thread, error = 5` | 文件监视器在受限环境下无法工作 | 无害警告，不影响构建结果 |
 
 ---

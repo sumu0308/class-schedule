@@ -11,6 +11,13 @@ rem   "couldn't create signal pipe, Win32 error 5". Instead of a helper, this
 rem   script puts the gh CLI token into the push URL and clears the helper chain
 rem   with -c credential.helper= (the token is never written to .git/config).
 rem
+rem QUIRK 3: behind a proxy that only allows a domain allowlist, github.com:443 is
+rem   refused outright ("CONNECT tunnel failed, response 502") while api.github.com
+rem   keeps working. Retrying git push can never help in that case, so after the 8
+rem   attempts this script falls back to tools\push-auto.mjs, which rebuilds the
+rem   commit through the GitHub Git Data API and only moves the remote ref when
+rem   every SHA matches the local one (so it cannot cause a divergence).
+rem
 rem !!! KEEP THIS FILE PURE ASCII !!!
 rem cmd.exe parses .bat/.cmd byte by byte; non-ASCII comments desynchronise that
 rem parsing and the script starts executing its own comments as commands. This
@@ -90,7 +97,11 @@ if defined OK (
   echo [3/3] Pushed. Verifying remote against local ...
   node tools\verify-remote.mjs
 ) else (
-  echo [3/3] All 8 attempts failed. The commit is safe locally - try again later.
-  exit /b 1
+  echo [3/3] All 8 attempts failed. Falling back to the GitHub API ...
+  node tools\push-auto.mjs --api-only
+  if errorlevel 1 (
+    echo [3/3] API fallback failed too. The commit is safe locally - try again later.
+    exit /b 1
+  )
 )
 endlocal
