@@ -1,32 +1,39 @@
 package com.classschedule.app.ui
 
-import android.graphics.Paint
-import android.graphics.Typeface
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.classschedule.app.data.Course
 import com.classschedule.app.data.Period
+import com.classschedule.app.data.Term
 import com.classschedule.app.data.WeekParity
 import com.classschedule.app.util.GridClock
 import com.classschedule.app.util.TermCalendar
@@ -378,12 +385,43 @@ fun computeLayout(
     return ScheduleLayout(geometry = geometry, occupancy = occupancy, blocks = blocks)
 }
 
+// ─────────────────────────────────────────────────────────────
+// 卡片式课表（v0.9.0 起）：每小节一行，每门课合并一大节为一卡
+// ─────────────────────────────────────────────────────────────
+
+/** 一节课在网格里的放置：从第 rowStart 个小节行起，向下占 span 个小节行 */
+private data class Placed(
+    val course: Course,
+    val rowStart: Int,
+    val span: Int,
+)
+
 /**
- * 课表网格。
+ * 行高 / 间距 / 左栏 / 表头 常量（dp）。
  *
- * 用 Canvas 自绘而非嵌套 Compose 布局，原因：
- *   行高按真实分钟数成比例、课程块跨行、块内要塞"课名 + 教室"两行小字，
- *   自绘在排版精度和滚动性能上都更可控。
+ * 左栏（[GUTTER_W]）只放小节序号，不再放时间刻度 —— 7 天同屏时每一列宽约
+ * (屏宽-左栏)/7，左栏每省下 1 dp 就会还给每一列 1/7 dp，所以这里压到刚好放下
+ * 一位数字（28 dp）。卡片外边距 [CARD_OUT_PAD] 与内边距 [CARD_IN_PAD] 同理，
+ * 都是直接从列宽里扣的，能小则小。
+ */
+private val ROW_H = 64.dp
+private val GAP = 5.dp
+private val GUTTER_W = 28.dp
+private val HEADER_H = 46.dp
+private val CARD_OUT_PAD = 2.dp
+private val CARD_IN_PAD = 4.dp
+
+/**
+ * 卡片式课表。
+ *
+ * 与旧版（Canvas 自绘、按"大节"成行）不同，这里按**小节**画行、用 Compose 布局直接摆放卡片：
+ *   - 左栏只显示小节序号（大节起始行加粗）；
+ *   - 每门课占有其 startPeriodIndex 起、periodCount 个小节，合并成一张卡；
+ *   - 卡片上显示合并后的上课时间（如 08:00–09:40）+ 课名 + 教师·教室；
+ *   - 表头显示星期与日期，今天高亮；
+ *   - 点击课程卡 → 编辑；长按空白处 → 新增。
+ *
+ * 按周显示过滤（weekRanges + 单双周）与旧版 [computeLayout] 保持一致。
  */
 @Composable
 fun ScheduleGrid(
@@ -392,317 +430,279 @@ fun ScheduleGrid(
     dayCount: Int,
     periods: List<Period>,
     isDark: Boolean,
+    term: Term?,
     onCourseTap: (Course) -> Unit,
     onEmptyLongPress: (day: Int, periodIndex: Int) -> Unit,
 ) {
     val density = LocalDensity.current
+    val sortedPeriods = remember(periods) { periods.sortedBy { it.index } }
+    val rowCount = sortedPeriods.size
 
-    val blockGapPx = with(density) { GridMetrics.BLOCK_GAP_DP.dp.toPx() }
-    val cornerPx = with(density) { GridMetrics.CORNER_DP.dp.toPx() }
-    val textPadPx = with(density) { GridMetrics.TEXT_PADDING_DP.dp.toPx() }
+    val todayDow = TermCalendar.dayOfWeek(TermCalendar.todayEpochDay())
+    val currentMonday = term?.let {
+        TermCalendar.mondayOfWeek(
+            TermCalendar.weekOf(TermCalendar.todayEpochDay(), it.startEpochDay),
+            it.startEpochDay,
+        )
+    }
+    val viewedMonday = term?.let { TermCalendar.mondayOfWeek(week, it.startEpochDay) }
+    val isCurrentWeek = viewedMonday != null && viewedMonday == currentMonday
 
-    val lineColor = if (isDark) Color(0xFF33383F) else Color(0xFFE4E8ED)
-    /** 行内每半小时的浅色横线，比行分隔线更淡 */
-    val faintLineColor = if (isDark) Color(0xFF262A30) else Color(0xFFF0F3F7)
-    val gutterBg = if (isDark) Color(0xFF23262B) else Color(0xFFF5F7FA)
-    val headerBg = if (isDark) Color(0xFF1F2227) else Color(0xFFEDF1F6)
-    val primaryText = if (isDark) Color(0xFFE8EAED) else Color(0xFF1F2328)
-    val secondaryText = if (isDark) Color(0xFF8F959C) else Color(0xFF6B7280)
-
-    val strokePaint = remember(isDark) { Paint().apply { isAntiAlias = true } }
-
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // 这里必须用 BoxWithConstraints 才能拿到课表区域真正可用的高度：
-        // 整天尽量铺满屏幕的行高就靠它算出来，写死行高会出现"下半个屏幕全是空白"。
-        val viewportWidthPx = with(density) { maxWidth.toPx() }
-        val viewportHeightDp = maxHeight.value
-        val naturalBodyHeightDp = (viewportHeightDp - GridMetrics.HEADER_HEIGHT_DP).coerceAtLeast(0f)
-
-        // 列宽：屏幕放得下就把整宽均分给各天，放不下就按固定列宽横向滚动。
-        // 留 1 px 余量，避免 dp/px 取整后把最后一列挤出屏幕。
-        val dayWidthDp = GridMetrics.dayWidthDp(dayCount)
-        val widthForDaysDp = with(density) {
-            (viewportWidthPx - GridMetrics.GUTTER_WIDTH_DP.dp.toPx() - 1f).toDp().value
-        }.coerceAtLeast(1f)
-        val baseGridWidthDp = dayCount * dayWidthDp
-        val stretch = (widthForDaysDp / baseGridWidthDp).coerceAtLeast(1f)
-        val colWidthDp = dayWidthDp * stretch
-        val gridWidthDp = colWidthDp * dayCount
-        val colWidthPx = with(density) { colWidthDp.dp.toPx() }
-
-        // 排版在拿到实际可用高度之后才算：整天尽量铺满屏幕，不写死行高
-        val layout = remember(courses, periods, week, dayCount, naturalBodyHeightDp, colWidthPx) {
-            computeLayout(
-                courses = courses,
-                periods = periods,
-                week = week,
-                dayCount = dayCount,
-                dayWidthPx = colWidthPx,
-                availableHeightDp = naturalBodyHeightDp,
-            )
+    // 与 computeLayout 一致的按周过滤
+    val validIndexes = sortedPeriods.map { it.index }.toSet()
+    val visible = courses
+        .filter { it.dayOfWeek in 1..dayCount }
+        .filter { it.startPeriodIndex in validIndexes }
+        .filter { WeekRanges.contains(it.weekRanges, week) }
+        .filter { c ->
+            when (c.weekParity) {
+                WeekParity.EVERY -> true
+                WeekParity.ODD -> week % 2 == 1
+                WeekParity.EVEN -> week % 2 == 0
+            }
         }
-        val geometry = layout.geometry
-        val contentHeightDp = with(density) { geometry.contentHeight.toDp().value }
 
-        // 一屏放得下就正好铺满（不留滚动条），放不下才滚动
-        val needsVerticalScroll = contentHeightDp > naturalBodyHeightDp + 0.5f
-        val bodyHeightDp = if (needsVerticalScroll) contentHeightDp else naturalBodyHeightDp
-        val needsHorizontalScroll = gridWidthDp > widthForDaysDp + 0.5f
+    val placedByDay = (1..dayCount).associateWith { d ->
+        visible.filter { it.dayOfWeek == d }.mapNotNull { c ->
+            val rs = sortedPeriods.indexOfFirst { p -> p.index == c.startPeriodIndex }
+            if (rs < 0) null else {
+                val span = c.periodCount.coerceAtLeast(1).coerceAtMost(rowCount - rs).coerceAtLeast(1)
+                Placed(c, rs, span)
+            }
+        }
+    }
 
-        val gutterTotalDp = GridMetrics.GUTTER_WIDTH_DP
-        val gutterWidthPx = with(density) { GridMetrics.GUTTER_WIDTH_DP.dp.toPx() }
-        /** 整点刻度占左栏最右这一条，剩下的大节时间与节次号往左排 */
-        val hourRulerWidthPx = with(density) { GridMetrics.HOUR_RULER_DP.dp.toPx() }
+    val lineColor = if (isDark) Color(0xFF33383F) else Color(0xFFECEEF0)
+    val lineStrong = if (isDark) Color(0xFF454C56) else Color(0xFFDDE2E7)
+    val gutterBg = if (isDark) Color(0xFF202329) else Color(0xFFFAFBFB)
+    val headerBg = if (isDark) Color(0xFF1E2126) else Color(0xFFEDF1F6)
+    val primaryText = if (isDark) Color(0xFFE8EAED) else Color(0xFF2B2F33)
+    val mutedText = if (isDark) Color(0xFF8F959C) else Color(0xFF8A9099)
+    val todayAccent = Color(0xFF0F9D8F)
+    val todayTint = if (isDark) Color(0x1A3B3A) else Color(0xFFE7F6F3)
 
-        // 左侧栏与星期表头共用同一个横向滚动状态：横向滑动时两者一起走，列才对得上
-        val hScroll = rememberScrollState()
-        // 左栏与课表主体共用同一个纵向滚动状态：纵向滑动时两者一起走，行才对得上
-        val vScroll = rememberScrollState()
+    val rowPx = with(density) { ROW_H.toPx() }
 
-        Column {
-            // ── 第一行：左上角留白 + 星期表头（不参与纵向滚动）──
-            Row {
-                Canvas(modifier = Modifier.width(gutterTotalDp.dp).height(GridMetrics.HEADER_HEIGHT_DP.dp)) {
-                    drawRect(headerBg)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        // ── 表头：左上角 + 星期/日期 ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(HEADER_H)
+                .background(headerBg),
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(GUTTER_W)
+                    .fillMaxHeight()
+                    .background(gutterBg)
+                    .border(0.5.dp, lineColor),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("节", fontSize = 11.sp, color = mutedText)
+            }
+            for (d in 1..dayCount) {
+                val isToday = isCurrentWeek && d == todayDow
+                val dateEpoch = viewedMonday?.plus((d - 1).toLong())
+                val dateText = if (isToday) "今天" else (dateEpoch?.let { TermCalendar.formatShort(it) } ?: "–")
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(if (isToday) todayTint else Color.Transparent),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = TermCalendar.dayName(d),
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = if (isToday) todayAccent else primaryText,
+                    )
+                    Spacer(Modifier.height(1.dp))
+                    Text(
+                        text = dateText,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        color = if (isToday) todayAccent else mutedText,
+                    )
                 }
-                Row(modifier = Modifier.horizontalScroll(hScroll)) {
-                    Canvas(modifier = Modifier.width(gridWidthDp.dp).height(GridMetrics.HEADER_HEIGHT_DP.dp)) {
-                        drawIntoCanvas { canvas ->
-                            val nc = canvas.nativeCanvas
-                            nc.drawRect(0f, 0f, size.width, size.height, Paint().apply { color = headerBg.toArgb() })
-                            strokePaint.textAlign = Paint.Align.CENTER
-                            strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                            strokePaint.textSize = 11.sp.toPx()
-                            strokePaint.color = primaryText.toArgb()
-                            val dw = colWidthPx.dp.toPx()
-                            for (d in 1..dayCount) {
-                                nc.drawText(
-                                    TermCalendar.dayName(d),
-                                    (d - 1) * dw + dw / 2,
-                                    size.height / 2 + strokePaint.textSize / 3,
-                                    strokePaint,
-                                )
-                            }
+            }
+        }
+
+        // ── 主体：左栏 + 各天 ──
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // 左栏：小节序号
+            Column(
+                modifier = Modifier
+                    .width(GUTTER_W)
+                    .background(gutterBg)
+                    .border(0.5.dp, lineColor),
+            ) {
+                for (i in sortedPeriods.indices) {
+                    val isBigStart = i % GridMetrics.PERIODS_PER_BLOCK == 0
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(ROW_H),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "${i + 1}",
+                            fontWeight = if (isBigStart) FontWeight.Bold else FontWeight.Normal,
+                            fontSize = 11.sp,
+                            color = primaryText,
+                        )
+                        if (i != 0) {
+                            val divider = if (isBigStart) lineStrong else lineColor
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(0.5.dp)
+                                    .offset(y = (-ROW_H.value / 2).dp)
+                                    .background(divider),
+                            )
                         }
                     }
                 }
             }
 
-            // ── 第二行：左侧栏（节次号 + 大节时间 + 整点刻度）/ 课表主体 ──
-            //    纵向的滚动状态由左栏与主体共用，两边一起滚，行才不会错位；
-            //    横向只滚课表主体，左栏留在原地当标尺。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(bodyHeightDp.dp)
-                    .then(if (needsVerticalScroll) Modifier.verticalScroll(vScroll) else Modifier),
-            ) {
-                // ── 左栏：高度与内容区完全一致，所以节次号逐行对准 ──
-                Canvas(
+            // 各天列
+            for (d in 1..dayCount) {
+                val isToday = isCurrentWeek && d == todayDow
+                Box(
                     modifier = Modifier
-                        .width(gutterTotalDp.dp)
-                        .height(bodyHeightDp.dp),
-                ) {
-                    drawIntoCanvas { canvas ->
-                        val nc = canvas.nativeCanvas
-                        val gutterLine = Paint().apply { color = lineColor.toArgb(); strokeWidth = 1.dp.toPx() }
-                        nc.drawRect(0f, 0f, size.width, size.height, Paint().apply { color = gutterBg.toArgb() })
-                        // 左栏与课表之间的那条竖线，与右侧网格线接上
-                        nc.drawLine(size.width - 0.5f, 0f, size.width - 0.5f, size.height, gutterLine)
-
-                        // 节次号：只写这一行的第一个小节号（第 1 大节就写 "1"），靠近右边的时间栏
-                        val numPaint = Paint().apply {
-                            isAntiAlias = true
-                            textAlign = Paint.Align.RIGHT
-                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                            textSize = 10.sp.toPx()
-                            color = primaryText.toArgb()
-                        }
-                        // 大节时间：写清这一行是几点到几点，例如 "8:00-9:40"
-                        val timePaint = Paint().apply {
-                            isAntiAlias = true
-                            textAlign = Paint.Align.LEFT
-                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-                            textSize = 7.5.sp.toPx()
-                            color = secondaryText.toArgb()
-                        }
-                        // 整点刻度：8:00 / 9:00 / 10:00 … 单独一列靠最右，与右侧内容区贴边
-                        val hourPaint = Paint().apply {
-                            isAntiAlias = true
-                            textAlign = Paint.Align.RIGHT
-                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-                            textSize = 9.sp.toPx()
-                            color = primaryText.toArgb()
-                        }
-
-                        val timeLeft = hourRulerWidthPx
-                        val numRight = timeLeft - 2f
-
-                        for ((i, row) in geometry.rows.withIndex()) {
-                            val top = geometry.offsets[i]
-                            val cy = top + geometry.heights[i] / 2f
-                            // 行分隔线：和右侧网格线同高，左右一眼能对上
-                            nc.drawLine(0f, top, size.width, top, gutterLine)
-                            val num = geometry.periodIndexOfRow(i) ?: (i + 1)
-                            nc.drawText("$num", numRight, cy + numPaint.textSize / 3f, numPaint)
-                            nc.drawText(row.timeLabel, timeLeft, cy + timePaint.textSize / 3f, timePaint)
-                        }
-
-                        // 整点刻度：整点正好落在课程块边界上时只补一小段，免得和行分隔线糊成一条
-                        for ((label, y) in geometry.hourTicks) {
-                            nc.drawText(label, size.width - 2f, y + hourPaint.textSize / 3f, hourPaint)
-                        }
-                    }
-                }
-
-                // ── 课表主体：网格与课程块都用 Canvas 自绘，横向单独滚动 ──
-                Row(modifier = Modifier.horizontalScroll(hScroll)) {
-                Canvas(
-                    modifier = Modifier
-                        .width(gridWidthDp.dp)
-                        .height(bodyHeightDp.dp)
-                        .pointerInput(layout, dayCount, colWidthPx) {
+                        .weight(1f)
+                        .height((rowCount * ROW_H.value).dp)
+                        .background(if (isToday) todayTint else Color.Transparent)
+                        .border(0.5.dp, lineColor)
+                        .pointerInput(d, sortedPeriods, rowCount) {
                             detectTapGestures(
-                                onTap = { offset ->
-                                    val day = (offset.x / colWidthPx).toInt() + 1
-                                    if (day !in 1..dayCount) return@detectTapGestures
-                                    val hit = layout.blocks.lastOrNull { it.day == day && it.contains(offset.x, offset.y) }
-                                    if (hit != null) {
-                                        onCourseTap(hit.course)
-                                        return@detectTapGestures
-                                    }
-                                    // 点空白处不做事，避免误触
-                                },
                                 onLongPress = { offset ->
-                                    val day = (offset.x / colWidthPx).toInt() + 1
-                                    if (day !in 1..dayCount) return@detectTapGestures
-                                    val occupied = layout.blocks.any { it.day == day && it.contains(offset.x, offset.y) }
-                                    if (occupied) return@detectTapGestures
-                                    val periodIndex = geometry.periodAt(offset.y) ?: return@detectTapGestures
-                                    onEmptyLongPress(day, periodIndex)
+                                    if (rowCount <= 0) return@detectTapGestures
+                                    val row = (offset.y / rowPx).toInt().coerceIn(0, rowCount - 1)
+                                    val period = sortedPeriods.getOrNull(row) ?: return@detectTapGestures
+                                    val occupied = placedByDay[d].orEmpty()
+                                        .any { p -> row in p.rowStart until (p.rowStart + p.span) }
+                                    if (!occupied) onEmptyLongPress(d, period.index)
                                 },
                             )
                         },
                 ) {
-                    drawIntoCanvas { canvas ->
-                        val nc = canvas.nativeCanvas
-
-                        // ── 网格线 ──
-                        val linePaint = Paint().apply {
-                            color = lineColor.toArgb()
-                            strokeWidth = 1.dp.toPx()
-                        }
-                        for (d in 0..dayCount) {
-                            val x = d * colWidthPx
-                            nc.drawLine(x, 0f, x, size.height, linePaint)
-                        }
-                        for (i in geometry.rows.indices) {
-                            val top = geometry.offsets[i]
-                            val bottom = top + geometry.heights[i]
-                            nc.drawLine(0f, top, size.width, top, linePaint)
-                            nc.drawLine(0f, bottom, size.width, bottom, linePaint)
-                        }
-
-                        // ── 行内每 30 分钟一条浅色横线（学校课表也是这么画的，用来估时间）──
-                        val faintPaint = Paint().apply {
-                            color = faintLineColor.toArgb()
-                            strokeWidth = 1.dp.toPx()
-                        }
-                        for ((i, row) in geometry.rows.withIndex()) {
-                            val top = geometry.offsets[i]
-                            var m = (row.startMinutes / 30 + 1) * 30
-                            while (m < row.endMinutes) {
-                                val y = top + (m - row.startMinutes) * geometry.pxPerMinute
-                                if (y > top + 1f && y < top + geometry.heights[i] - 1f) {
-                                    nc.drawLine(0f, y, size.width, y, faintPaint)
-                                }
-                                m += 30
-                            }
-                        }
-
-                        // ── 课程块：撑满所在格（左右到列边、上下到行边），只留一点内缩 ──
-                        for (b in layout.blocks) {
-                            val left = b.left * stretch + blockGapPx
-                            val top = b.top + blockGapPx
-                            val right = b.right * stretch - blockGapPx
-                            val bottom = b.bottom - blockGapPx
-
-                            val bg = Color(
-                                b.course.colorArgb
-                                    ?: CourseColors.forName(b.course.name).toArgb().toLong(),
-                            )
-                            nc.drawRoundRect(
-                                left, top, right, bottom, cornerPx, cornerPx,
-                                Paint().apply { color = bg.toArgb() },
-                            )
-
-                            val textColor = if (isLight(bg)) Color(0xFF17181A) else Color.White
-                            val blockHeightPx = bottom - top
-                            val nameSp = GridMetrics.nameTextSizeSp(blockHeightPx, density.density)
-                            val maxLines = GridMetrics.nameMaxLines(blockHeightPx, density.density)
-
-                            val maxWidth = right - left - textPadPx * 2
-
-                            // ── 第一行：上课时间，写在块里面（用户要求的学校课表样式）──
-                            val blockRow = geometry.rowOfPeriodIndex(b.course.startPeriodIndex)
-                            val timeLabel = geometry.rows.getOrNull(blockRow)?.timeLabel
-                            val timeSp = (nameSp - 1.5f).coerceAtLeast(7.5f)
-                            strokePaint.color = textColor.toArgb()
-                            strokePaint.textAlign = Paint.Align.LEFT
-                            strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-                            strokePaint.textSize = timeSp.sp.toPx()
-                            var y = top + textPadPx + strokePaint.textSize
-                            if (!timeLabel.isNullOrEmpty()) {
-                                nc.drawText(timeLabel, left + textPadPx, y, strokePaint)
-                                y += strokePaint.textSize * 1.25f
-                            }
-
-                            // ── 课名（可换行，块矮时只给一行）──
-                            strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                            strokePaint.textSize = nameSp.sp.toPx()
-                            y += strokePaint.textSize * 0.25f
-                            for (line in wrapText(b.course.name, strokePaint, maxWidth, maxLines)) {
-                                nc.drawText(line, left + textPadPx, y, strokePaint)
-                                y += strokePaint.textSize * 1.12f
-                            }
-
-                            // 教室：只在还剩得下一行时画，字号比课名小一档
-                            val room = b.course.room
-                            val roomSp = (nameSp - 2f).coerceAtLeast(7.5f)
-                            strokePaint.textSize = roomSp.sp.toPx()
-                            if (!room.isNullOrBlank() && y + strokePaint.textSize * 0.6f < bottom - 1f) {
-                                strokePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-                                nc.drawText(
-                                    room.take(10),
-                                    left + textPadPx,
-                                    minOf(y + strokePaint.textSize * 0.45f, bottom - 2f),
-                                    strokePaint,
-                                )
-                            }
-                        }
+                    // 行分隔线（每小节一行）
+                    for (i in sortedPeriods.indices) {
+                        val isBig = i % GridMetrics.PERIODS_PER_BLOCK == 0
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(0.5.dp)
+                                .offset(y = (i * ROW_H.value).dp)
+                                .background(if (i != 0 && isBig) lineStrong else lineColor),
+                        )
                     }
-                }
+                    // 课程卡
+                    placedByDay[d].orEmpty().forEach { p ->
+                        val startP = sortedPeriods[p.rowStart]
+                        val endP = sortedPeriods[p.rowStart + p.span - 1]
+                        val top = p.rowStart * ROW_H.value + GAP.value / 2f
+                        val h = p.span * ROW_H.value - GAP.value
+                        CourseCard(
+                            course = p.course,
+                            startTime = startP.startTime,
+                            endTime = endP.endTime,
+                            span = p.span,
+                            onClick = onCourseTap,
+                            modifier = Modifier
+                                .offset(y = top.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = CARD_OUT_PAD)
+                                .height(h.dp),
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-/** 简单按字符宽度换行：中文没有词边界，不能按空格切 */
-private fun wrapText(text: String, paint: Paint, maxWidth: Float, maxLines: Int): List<String> {
-    if (text.isEmpty() || maxWidth <= 0) return emptyList()
-    val lines = mutableListOf<String>()
-    val current = StringBuilder()
-    for (ch in text) {
-        if (paint.measureText(current.toString() + ch) > maxWidth && current.isNotEmpty()) {
-            lines.add(current.toString())
-            current.clear()
-            if (lines.size == maxLines) return lines
+/**
+ * 单张课程卡。
+ *
+ * 7 天同屏时一列正文只有 35–40 dp 宽，所以这里的排版原则是**先保证信息完整、再谈好看**：
+ *   - 课名：11 sp，最多占 1–3 行（按卡片高度决定），靠自动换行而不是省略号，
+ *     5 个字的课名在 40 dp 里换两行即可完整显示；
+ *   - 时间：起止时间**各占一行**（[startTime] 换行 [endTime]）。写成 "08:00-09:40"
+ *     一行时，Compose 会在任意字符处折行，出现 "08:0 / 0-0 / 0:40" 这种读不出来的断法；
+ *   - 教师 / 教室：各占一行放在卡片底部，会被 [Spacer] 推到最下面，中间留白随卡片高度伸缩；
+ *   - 只占一小节的窄卡（[span] <= 1）高度不足以放下四行字，只显示课名与时间。
+ */
+@Composable
+private fun CourseCard(
+    course: Course,
+    startTime: String,
+    endTime: String,
+    span: Int,
+    onClick: (Course) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg = course.colorArgb?.let { Color(it.toULong()) } ?: CourseColors.forName(course.name)
+    val textColor = if (isLight(bg)) Color(0xFF17181A) else Color.White
+    val teacher = course.teacher?.takeIf { it.isNotBlank() }
+    val room = course.room?.takeIf { it.isNotBlank() }
+    val singleRow = span <= 1
+
+    Box(
+        modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(bg)
+            .clickable { onClick(course) }
+            .padding(horizontal = CARD_IN_PAD, vertical = CARD_IN_PAD),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = course.name,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 11.sp,
+                lineHeight = 13.sp,
+                color = textColor,
+                maxLines = if (singleRow) 1 else 3,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = startTime + "\n" + endTime,
+                fontSize = 9.sp,
+                lineHeight = 11.sp,
+                color = textColor.copy(alpha = 0.78f),
+                maxLines = 2,
+            )
+            if (!singleRow && (teacher != null || room != null)) {
+                Spacer(Modifier.weight(1f))
+                if (teacher != null) {
+                    Text(
+                        text = teacher,
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
+                        color = textColor.copy(alpha = 0.9f),
+                        maxLines = 1,
+                    )
+                }
+                if (room != null) {
+                    Text(
+                        text = room,
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
+                        color = textColor.copy(alpha = 0.9f),
+                        maxLines = 2,
+                    )
+                }
+            }
         }
-        current.append(ch)
     }
-    if (current.isNotEmpty() && lines.size < maxLines) lines.add(current.toString())
-    return lines
 }
 
 /** 相对亮度，决定块内文字用黑还是白 */

@@ -1,20 +1,23 @@
 package com.classschedule.app.ui
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -25,10 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,11 +36,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.classschedule.app.ScheduleViewModel
@@ -62,7 +59,6 @@ fun WeekScreen(vm: ScheduleViewModel) {
     val courses by vm.courses.collectAsStateWithLifecycle()
     val periods by vm.periods.collectAsStateWithLifecycle()
     val week by vm.week.collectAsStateWithLifecycle()
-    val showWeekend by vm.showWeekend.collectAsStateWithLifecycle()
     val edit by vm.edit.collectAsStateWithLifecycle()
     val termEdit by vm.termEdit.collectAsStateWithLifecycle()
     val periodEditorVisible by vm.periodEditorVisible.collectAsStateWithLifecycle()
@@ -78,8 +74,12 @@ fun WeekScreen(vm: ScheduleViewModel) {
     }
 
     val t = term
-    val dayCount = if (showWeekend) 7 else 5
-    val periodCount = periods.size.coerceAtLeast(1)
+    val dayCount = 7
+    val totalWeeks = t?.totalWeeks?.coerceAtLeast(1) ?: 20
+    val currentWeek = vm.currentWeek()
+    val onCurrentWeek = week == currentWeek
+    // 周次下拉是否展开（第 N 周 点一下就能跳到任意一周）
+    var weekMenuOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
@@ -94,22 +94,101 @@ fun WeekScreen(vm: ScheduleViewModel) {
                             text = t?.name ?: "课表",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
                         )
-                        Text(
-                            text = weekSubtitle(t, week),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 「第 N 周」本身是个下拉框：点开就是整学期的周次列表，
+                            // 比"左右箭头 + 整行周次条"省下一整行高度留给课表。
+                            Box {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { weekMenuOpen = true }
+                                        .padding(end = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "第 $week 周",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = "选择周次",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = weekMenuOpen,
+                                    onDismissRequest = { weekMenuOpen = false },
+                                ) {
+                                    for (w in 1..totalWeeks) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = "第 $w 周",
+                                                        fontWeight = if (w == week) {
+                                                            FontWeight.Bold
+                                                        } else {
+                                                            FontWeight.Normal
+                                                        },
+                                                        color = if (w == week) {
+                                                            MaterialTheme.colorScheme.primary
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurface
+                                                        },
+                                                    )
+                                                    Spacer(Modifier.width(10.dp))
+                                                    Text(
+                                                        text = weekRangeText(t, w),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                }
+                                            },
+                                            trailingIcon = {
+                                                if (w == currentWeek) {
+                                                    Text(
+                                                        text = "本周",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                weekMenuOpen = false
+                                                vm.goToWeek(w)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = weekSubtitle(t, week),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 },
                 actions = {
-                    if (!vm.isViewingCurrentWeek()) {
-                        TextButton(onClick = { vm.goToCurrentWeek() }) {
-                            Text("本周")
-                        }
-                    }
-                    TextButton(onClick = { vm.toggleWeekend() }) {
-                        Text(if (showWeekend) "5 天" else "7 天")
+                    TextButton(onClick = { vm.goToCurrentWeek() }) {
+                        Text(
+                            text = "今天",
+                            fontWeight = if (onCurrentWeek) FontWeight.Normal else FontWeight.SemiBold,
+                            color = if (onCurrentWeek) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
                     }
                     TextButton(onClick = { vm.openTermEdit() }) {
                         Text("学期")
@@ -131,16 +210,6 @@ fun WeekScreen(vm: ScheduleViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            WeekSwitcher(
-                week = week,
-                totalWeeks = t?.totalWeeks ?: 20,
-                isCurrent = vm.isViewingCurrentWeek(),
-                onPrev = { vm.stepWeek(-1) },
-                onNext = { vm.stepWeek(1) },
-                onToday = { vm.goToCurrentWeek() },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-
             if (courses.isEmpty()) {
                 EmptyHint(
                     onAdd = {
@@ -155,6 +224,7 @@ fun WeekScreen(vm: ScheduleViewModel) {
                     dayCount = dayCount,
                     periods = periods,
                     isDark = MaterialTheme.colorScheme.background.luminanceOf() < 0.5f,
+                    term = t,
                     onCourseTap = { course -> vm.startEdit(course) },
                     onEmptyLongPress = { day, period -> vm.startAdd(day, period) },
                 )
@@ -193,80 +263,6 @@ fun WeekScreen(vm: ScheduleViewModel) {
     )
 }
 
-/** 顶部周次切换条 */
-@Composable
-private fun WeekSwitcher(
-    week: Int,
-    totalWeeks: Int,
-    isCurrent: Boolean,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-    onToday: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onPrev, enabled = week > 1) {
-            ChevronIcon(pointsLeft = true)
-        }
-        Row(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "第 $week 周",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (isCurrent) {
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "本周",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-        IconButton(onClick = onNext, enabled = week < totalWeeks) {
-            ChevronIcon(pointsLeft = false)
-        }
-    }
-}
-
-/**
- * 自绘的左右箭头图标。
- * 不用 material-icons-extended 是为了少一个依赖，也少一份下载失败的风险。
- */
-@Composable
-private fun ChevronIcon(pointsLeft: Boolean) {
-    val color = MaterialTheme.colorScheme.onSurface
-    Canvas(modifier = Modifier.size(20.dp)) {
-        val w = size.width
-        val h = size.height
-        val path = Path().apply {
-            if (pointsLeft) {
-                moveTo(w * 0.65f, h * 0.18f)
-                lineTo(w * 0.32f, h * 0.5f)
-                lineTo(w * 0.65f, h * 0.82f)
-            } else {
-                moveTo(w * 0.35f, h * 0.18f)
-                lineTo(w * 0.68f, h * 0.5f)
-                lineTo(w * 0.35f, h * 0.82f)
-            }
-        }
-        drawPath(
-            path = path,
-            color = color,
-            style = Stroke(width = w * 0.11f, cap = StrokeCap.Round),
-        )
-    }
-}
-
 /** 空状态：明确告诉用户下一步能做什么，不留死胡同 */
 @Composable
 private fun EmptyHint(onAdd: () -> Unit) {
@@ -301,6 +297,13 @@ private fun weekSubtitle(term: Term?, week: Int): String {
     val monday = TermCalendar.mondayOfWeek(week, term.startEpochDay)
     val sunday = monday + 6
     return "${TermCalendar.formatMonthDay(monday)} - ${TermCalendar.formatMonthDay(sunday)} · 共 ${term.totalWeeks} 周"
+}
+
+/** 周次下拉里每一周对应的日期范围，如 "10/12 - 10/18" */
+private fun weekRangeText(term: Term?, week: Int): String {
+    if (term == null) return ""
+    val monday = TermCalendar.mondayOfWeek(week, term.startEpochDay)
+    return "${TermCalendar.formatShort(monday)} - ${TermCalendar.formatShort(monday + 6)}"
 }
 
 /** 判断当前是不是深色配色 */

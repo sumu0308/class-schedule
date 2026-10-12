@@ -45,7 +45,30 @@ class CourseRepository(private val db: AppDatabase) {
             ),
         )
         periodDao.insertAll(defaultPeriods(termId))
+        seedDemoCourses(termId)
         return termId
+    }
+
+    /**
+     * 首次启动时放几门示例课程，方便直接看到课表卡片样式（随手即可删除）。
+     * 每门课占一个完整大节：periodCount=2，startPeriodIndex 取各大大节的起始小节。
+     */
+    private suspend fun seedDemoCourses(termId: Long) {
+        val demo = listOf(
+            Course(termId = termId, name = "高等数学", teacher = "张老师", room = "A101", dayOfWeek = 1, startPeriodIndex = 1, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "大学英语", teacher = "李老师", room = "B203", dayOfWeek = 1, startPeriodIndex = 3, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "线性代数", teacher = "王老师", room = "C305", dayOfWeek = 1, startPeriodIndex = 5, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "程序设计", teacher = "赵老师", room = "D401", dayOfWeek = 1, startPeriodIndex = 7, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "数据结构", teacher = "陈老师", room = "A210", dayOfWeek = 2, startPeriodIndex = 1, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "计算机网络", teacher = "刘老师", room = "E108", dayOfWeek = 2, startPeriodIndex = 5, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "园林设计", teacher = "孙老师", room = "F302", dayOfWeek = 3, startPeriodIndex = 1, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "体育", teacher = "周老师", room = "操场", dayOfWeek = 3, startPeriodIndex = 3, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "操作系统", teacher = "吴老师", room = "C401", dayOfWeek = 4, startPeriodIndex = 5, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "数据库原理", teacher = "郑老师", room = "D210", dayOfWeek = 4, startPeriodIndex = 7, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "概率论", teacher = "冯老师", room = "B110", dayOfWeek = 5, startPeriodIndex = 3, periodCount = 2, weekRanges = "1-20"),
+            Course(termId = termId, name = "思想政治", teacher = "何老师", room = "J101", dayOfWeek = 5, startPeriodIndex = 7, periodCount = 2, weekRanges = "1-20"),
+        )
+        demo.forEach { courseDao.insert(it) }
     }
 
     /**

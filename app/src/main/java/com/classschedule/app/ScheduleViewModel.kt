@@ -18,7 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
 
 /** 课程编辑弹窗的状态。editingId 为 null 表示新增。 */
@@ -47,6 +50,7 @@ data class TermEditState(
     val totalWeeks: Int = 20,
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ScheduleViewModel(
     app: Application,
     private val repo: CourseRepository,
@@ -113,11 +117,12 @@ class ScheduleViewModel(
             }
         }
 
+        // 学期变化时用 flatMapLatest 切换到新学期的节次 Flow（旧 Flow 会自动取消）。
+        // 不能用嵌套 collect：Room 的 Flow 永不完成，内层会一直挂起、外层收不到后续学期更新。
         viewModelScope.launch {
-            repo.currentTerm.collect { t ->
-                if (t == null) return@collect
-                repo.periodsOf(t.id).collect { _periods.value = it }
-            }
+            repo.currentTerm
+                .flatMapLatest { t -> if (t == null) emptyFlow() else repo.periodsOf(t.id) }
+                .collect { _periods.value = it }
         }
     }
 

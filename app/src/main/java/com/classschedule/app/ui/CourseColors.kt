@@ -8,18 +8,18 @@ import androidx.compose.ui.graphics.Color
  */
 object CourseColors {
 
-    /** 预设色板：明度适中，保证白字与黑字都能看清 */
+    /** 预设色板：低饱和淡色，冷静不花哨；亮度偏高故统一用深色文字 */
     val palette: List<Color> = listOf(
-        Color(0xFF4C7DF0), // 蓝
-        Color(0xFF2FA37C), // 绿
-        Color(0xFFE0803A), // 橙
-        Color(0xFFB563D6), // 紫
-        Color(0xFFD9534F), // 红
-        Color(0xFF3AA0C4), // 青
-        Color(0xFF8A9A2B), // 橄榄
-        Color(0xFFC2557E), // 玫红
-        Color(0xFF6B7FD1), // 蓝紫
-        Color(0xFF4E8C5A), // 深绿
+        Color(0xFFDCE9E3), // 灰绿
+        Color(0xFFDCE6F0), // 灰蓝
+        Color(0xFFEFE7D8), // 灰沙
+        Color(0xFFE7E0EE), // 灰紫
+        Color(0xFFD9E4EC), // 蓝灰
+        Color(0xFFECE2D6), // 灰棕
+        Color(0xFFDCEAEA), // 灰青
+        Color(0xFFECDDE2), // 灰玫
+        Color(0xFFE2E6DD), // 灰橄榄
+        Color(0xFFDFE3EA), // 灰银蓝
     )
 
     /** 根据课程名取一个稳定的颜色 */
