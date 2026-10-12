@@ -57,6 +57,10 @@ const GIT_ONLY = has('--git-only');
 const DRY = has('--dry-run');
 const COMMIT_MSG = opt('-m', null);
 const PUSH_TRIES = Number(opt('--tries', '2'));
+// 代理环境下 api.github.com 也会偶发抖动（实测见过 "fetch failed"），所以 API 调用也要重试
+const API_TRIES = Number(opt('--api-tries', '4'));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── 子进程：stdout/stderr 走临时文件（沙箱禁管道） ───────────
 const scratchDir = mkdtempSync(join(tmpdir(), 'push-auto-'));
@@ -119,7 +123,7 @@ function mask(s) {
   return TOKEN ? s.split(TOKEN).join('***') : s;
 }
 
-async function api(method, path, payload, { ok404 = false } = {}) {
+async function apiOnce(method, path, payload, { ok404 = false } = {}) {
   const headers = {
     Authorization: `Bearer ${token()}`,
     Accept: 'application/vnd.github+json',
@@ -130,8 +134,16 @@ async function api(method, path, payload, { ok404 = false } = {}) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(payload);
   }
-  const r = await fetch(API + path, init);
-  const text = await r.text();
+  let r;
+  try {
+    r = await fetch(API + path, init);
+  } catch (e) {
+    // 网络层失败（DNS / TLS / 代理抖动）：可重试
+    const err = new Error(`API ${method} ${path} 网络失败：${e.cause?.message ?? e.message}`);
+    err.transient = true;
+    throw err;
+  }
+  const text = await r.text().catch(() => '');
   let body;
   try {
     body = text ? JSON.parse(text) : null;
@@ -140,11 +152,32 @@ async function api(method, path, payload, { ok404 = false } = {}) {
   }
   if (ok404 && r.status === 404) return null;
   if (!r.ok) {
-    throw new Error(
+    const err = new Error(
       `API ${method} ${path} -> HTTP ${r.status}\n${typeof body === 'string' ? body : JSON.stringify(body)}`,
     );
+    // 5xx / 429 是暂时性的；4xx 是确定性错误（令牌、权限、参数），重试没意义
+    err.transient = r.status >= 500 || r.status === 429;
+    throw err;
   }
   return body;
+}
+
+/** 带退避重试的 API 调用 */
+async function api(method, path, payload, opts) {
+  let last;
+  for (let i = 1; i <= API_TRIES; i++) {
+    try {
+      return await apiOnce(method, path, payload, opts);
+    } catch (e) {
+      last = e;
+      if (!e.transient) throw e;
+      if (i < API_TRIES) {
+        console.log(`    API 抖动（${e.message.split('\n')[0]}），第 ${i}/${API_TRIES} 次后重试 ...`);
+        await sleep(800 * i);
+      }
+    }
+  }
+  throw last;
 }
 
 // ── 读本地提交对象 ──────────────────────────────────────────
@@ -201,8 +234,8 @@ function tryGitPush() {
       'push', url, `${BRANCH}:${BRANCH}`,
     ]);
     if (r.status === 0) return true;
-    const err = mask(r.stderr).trim();
-    console.log(`    失败: ${err ? err.split('\n').pop() : '(无输出)'}`);
+    const detail = (mask(r.stderr).trim() || mask(r.stdout).trim()).split('\n').filter(Boolean).pop();
+    console.log(`    失败: ${detail ?? '(无输出)'}`);
   }
   return false;
 }
@@ -255,13 +288,11 @@ if (DRY) {
 } else if (GIT_ONLY) {
   if (!tryGitPush()) throw new Error('--git-only：git push 没成功（去掉该参数即自动降级到 API）');
   console.log('\n[OK] git push 成功。');
-  verifyRemote();
-  finish(0);
+  finish(verifyRemote().status ?? 1);
 } else if (!API_ONLY) {
   if (tryGitPush()) {
     console.log('\n[OK] git push 成功。');
-    verifyRemote();
-    finish(0);
+    finish(verifyRemote().status ?? 1);
   }
   console.log('[1] git push 不通 -> 降级到 Git Data API（github.com:443 被拦/超时的典型情形）\n');
 }
@@ -345,6 +376,7 @@ await api('PATCH', `/repos/${REPO}/git/refs/heads/${BRANCH}`, { sha: parentSha, 
 console.log(`\n[OK] 远端 ${BRANCH} -> ${parentSha.slice(0, 12)}`);
 
 // ── 步骤 3：核对 ────────────────────────────────────────────
+// 把核对结果当作本脚本的退出码传出去：万一 git push 口是心非（退出 0 却没真推上去），
+// verify-remote 会发现"本地有未推送的提交"并返回 1 —— 这里不能当成成功。
 console.log('[3] 核对远程与本地 ...');
-verifyRemote();
-finish(0);
+finish(verifyRemote().status ?? 1);
