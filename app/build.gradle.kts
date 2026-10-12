@@ -17,8 +17,8 @@ android {
         applicationId = "com.classschedule.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.11.1"
+        versionCode = 13
+        versionName = "0.11.2"
     }
 
     // 正式签名（M6 阶段接入）：届时由 tools/create-keystore.mjs 生成密钥并写入
@@ -37,6 +37,8 @@ android {
 
     buildTypes {
         release {
+            // 代码裁剪留到 M6（发布准备）再做；届时开启 isMinifyEnabled +
+            // isShrinkResources 并补 keep 规则（Room / Compose 通常已自带 consumer 规则）。
             isMinifyEnabled = false
             isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
@@ -63,13 +65,18 @@ android {
     }
 }
 
+// Room 的 schema 导出目录：配合 AppDatabase 的 exportSchema = true，
+// 让每次结构变更都落一份可对比的 schema（迁移测试与 review 都依赖它）。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
-    implementation(libs.androidx.navigation.compose)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

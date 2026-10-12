@@ -176,4 +176,46 @@ class PasteParserTest {
         assertTrue(report.issues.isEmpty())
         assertEquals("1-8,10-16", report.courses.single().weekRanges)
     }
+
+    // ── 教师 / 教室的歧义分流（回归：省略教室时教师不被塞进教室） ──
+
+    @Test
+    fun `省略教室_只写教师时教师不被塞进教室`() {
+        // 提示语顺序是「课程名 教师 教室」，用户省略教室只写教师；
+        // 旧实现把唯一的那个 token 当教室，导致教师丢失、教室位显示人名
+        val report = PasteParser.parse("高等数学 张老师 周一 1-2", totalWeeks, maxPeriod)
+        assertTrue(report.issues.isEmpty())
+        val c = report.courses.single()
+        assertEquals("高等数学", c.name)
+        assertEquals("张老师", c.teacher)
+        assertNull(c.room)
+    }
+
+    @Test
+    fun `只写教室_单个token像教室时判为教室`() {
+        val report = PasteParser.parse("高等数学 A101 周一 1-2", totalWeeks, maxPeriod)
+        assertTrue(report.issues.isEmpty())
+        val c = report.courses.single()
+        assertEquals("A101", c.room)
+        assertNull(c.teacher)
+    }
+
+    @Test
+    fun `带楼字的教室按教室识别`() {
+        val report = PasteParser.parse("大学英语 李老师 外语楼201 周三 3-4", totalWeeks, maxPeriod)
+        val c = report.courses.single()
+        assertEquals("李老师", c.teacher)
+        assertEquals("外语楼201", c.room)
+    }
+
+    @Test
+    fun `en dash 与全角波浪的节次也能解析`() {
+        // 从网页 / 文档复制来的 1–2（U+2013 en dash）过去会被判为非法
+        val report = PasteParser.parse("高等数学 - - 周一 1–2", totalWeeks, maxPeriod)
+        assertTrue(report.issues.isEmpty())
+        assertEquals(2, report.courses.single().periodCount)
+        val report2 = PasteParser.parse("大学英语 - - 周二 3～4", totalWeeks, maxPeriod)
+        assertTrue(report2.issues.isEmpty())
+        assertEquals(3, report2.courses.single().startPeriodIndex)
+    }
 }

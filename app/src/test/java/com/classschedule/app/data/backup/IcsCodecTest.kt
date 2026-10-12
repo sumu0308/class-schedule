@@ -318,6 +318,23 @@ class IcsCodecTest {
         assertEquals(longName, report.courses.single().name)
     }
 
+    // ── 转义还原顺序（回归） ──────────────────────────────
+
+    @Test
+    fun `转义反斜杠后跟n_还原为反斜杠加n而非换行`() {
+        // 单遍扫描：`\\`（转义的反斜杠）+ 字面 n 应还原成"反斜杠 + n"两个字符。
+        // 旧的链式 replace 把 \\n 排在 \\\\ 之前，会把它误转成换行。
+        val ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:高等数学\r\n" +
+            "DTSTART:${dateOf(1, 1, "080000")}\r\nDTEND:${dateOf(1, 1, "094000")}\r\n" +
+            "RRULE:FREQ=WEEKLY;COUNT=16\r\n" +
+            "DESCRIPTION:A\\\\nB\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        assertEquals("A\\nB", IcsCodec.parse(ics, term, periods).courses.single().teacher)
+
+        // 对照组：单个 \n 仍按换行还原
+        val ics2 = ics.replace("A\\\\nB", "A\\nB")
+        assertEquals("A\nB", IcsCodec.parse(ics2, term, periods).courses.single().teacher)
+    }
+
     // ── 工具 ──────────────────────────────────────────────
 
     /** 第 week 周、星期 day(1=周一) 的本地浮动日期时间，如 20260907T080000 */

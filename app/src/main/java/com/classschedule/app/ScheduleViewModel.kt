@@ -139,11 +139,27 @@ class ScheduleViewModel(
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
-    /** 刚被删除的课程，供"撤销"使用 */
-    private var lastDeleted: Course? = null
+    /**
+     * 待撤销的动作。与提示条一一对应：每条提示推入时都会重置它，
+     * UI 只有在它非 [None] 时才给提示条挂「撤销」按钮，消费后即失配——
+     * 杜绝"保存 B 的提示条撤销了早已删掉的 A"这类作用域错乱。
+     */
+    private sealed interface PendingUndo {
+        data object None : PendingUndo
+        data class DeleteCourse(val course: Course) : PendingUndo
+        data class RestoreBackup(val data: BackupData) : PendingUndo
+    }
 
-    /** JSON 整库导入前的数据快照，供"撤销恢复"使用（10.2.1） */
-    private var importUndoSnapshot: BackupData? = null
+    private var pendingUndo: PendingUndo = PendingUndo.None
+
+    /** 当前是否有可撤销的动作（UI 据此决定提示条是否显示「撤销」） */
+    fun canUndo(): Boolean = pendingUndo != PendingUndo.None
+
+    /** 推送提示并（默认）清空上一个待撤销动作，保证提示与撤销凭据一一对应 */
+    private fun pushMessage(text: String, undo: PendingUndo = PendingUndo.None) {
+        pendingUndo = undo
+        _message.value = text
+    }
 
     /** JSON 确认弹窗打开期间暂存的原文（确认时再解码一次，双保险） */
     private var pendingJsonText: String? = null
@@ -163,13 +179,23 @@ class ScheduleViewModel(
                 _week.value = currentWeekOf(snapshot)
             }
             if (migrated) {
-                _message.value = "节次时间已更新为新的默认作息（8:00-9:40 起），可在「学期 → 节次时间」里修改"
+                pushMessage("节次时间已更新为新的默认作息（8:00-9:40 起），可在「学期 → 节次时间」里修改")
             }
         }
 
         viewModelScope.launch {
             store.currentTerm.collect { t ->
-                if (t == null) return@collect
+                if (t == null) {
+                    // 没有当前学期（如恢复了不含 isCurrent 的备份、或处于中间态）：
+                    // 显式清空，别让 _term 带着一个已不存在的学期 id 继续服务——
+                    // 那种脏值会让后续保存撞上外键约束，而用户看不到任何课。
+                    if (_term.value != null) {
+                        _term.value = null
+                        _periods.value = emptyList()
+                        _courses.value = emptyList()
+                    }
+                    return@collect
+                }
                 val isDifferentTerm = _term.value?.id != t.id
                 _term.value = t
                 if (isDifferentTerm) _week.value = currentWeekOf(t)
@@ -276,9 +302,19 @@ class ScheduleViewModel(
             return
         }
 
-        val maxPeriod = _periods.value.size.coerceAtLeast(1)
+        // 节次的"最大序号"，不是"条数"：deletePeriod() 只删行、不重排剩余 index，
+        // 删掉中间一节后 index 会出现断层（如 {1,2,4,…,8}），用 size 收敛会把课挪位。
+        val maxPeriod = _periods.value.maxOfOrNull { it.index } ?: 1
         val startP = s.startPeriod.coerceIn(1, maxPeriod)
         val endP = s.endPeriod.coerceIn(startP, maxPeriod)
+
+        // 裁剪后才落库：全部超出本学期时不能静默存成空串（那门课会永不可见、且看不出存在），
+        // 直接报错让用户改周次，比"提示已裁剪、实际存了看不见"诚实。
+        val clampedWeeks = WeekRanges.clamp(s.weekExpr, term.totalWeeks)
+        if (clampedWeeks.isEmpty()) {
+            _edit.value = s.copy(error = "周次全部超出本学期（共 ${term.totalWeeks} 周），未保存")
+            return
+        }
 
         val course = Course(
             id = s.editingId ?: 0L,
@@ -290,17 +326,24 @@ class ScheduleViewModel(
             startPeriodIndex = startP,
             periodCount = endP - startP + 1,
             weekParity = s.parity,
-            weekRanges = WeekRanges.clamp(s.weekExpr, term.totalWeeks),
+            weekRanges = clampedWeeks,
             colorArgb = s.colorArgb,
         )
 
         viewModelScope.launch {
-            withContext(ioDispatcher) { store.saveCourse(course) }
+            // 兜底：学期被换掉/清空等极端情况下写库可能撞外键约束，
+            // 不能让它冒泡成崩溃——把原因回吐到弹窗里，用户至少能改。
+            val failure = runCatching { withContext(ioDispatcher) { store.saveCourse(course) } }
+                .exceptionOrNull()
+            if (failure != null) {
+                _edit.value = s.copy(error = "保存失败：${failure.message ?: failure.javaClass.simpleName}")
+                return@launch
+            }
             _edit.value = CourseEditState()
             val extra = if (WeekRanges.hasOutOfRange(s.weekExpr, term.totalWeeks)) {
                 "（超出本学期的周次已裁剪到 ${term.totalWeeks} 周）"
             } else ""
-            _message.value = (if (s.isNew) "已添加「$name」" else "已保存「$name」") + extra
+            pushMessage((if (s.isNew) "已添加「$name」" else "已保存「$name」") + extra)
         }
     }
 
@@ -309,18 +352,18 @@ class ScheduleViewModel(
         val target = _courses.value.firstOrNull { it.id == id } ?: return
         viewModelScope.launch {
             withContext(ioDispatcher) { store.deleteCourse(target) }
-            lastDeleted = target
             _edit.value = CourseEditState()
-            _message.value = "已删除「${target.name}」"
+            pushMessage("已删除「${target.name}」", PendingUndo.DeleteCourse(target))
         }
     }
 
     fun undoDelete() {
-        val c = lastDeleted ?: return
-        lastDeleted = null
+        val pending = pendingUndo as? PendingUndo.DeleteCourse ?: return
+        pendingUndo = PendingUndo.None
+        val c = pending.course
         viewModelScope.launch {
             withContext(ioDispatcher) { store.saveCourse(c.copy(id = 0)) }
-            _message.value = "已恢复「${c.name}」"
+            pushMessage("已恢复「${c.name}」")
         }
     }
 
@@ -330,7 +373,7 @@ class ScheduleViewModel(
 
     /** UI 层（SAF 读写失败等）复用消息栏推送提示 */
     fun showMessage(text: String) {
-        _message.value = text
+        pushMessage(text)
     }
 
     // ── 学期设置 ────────────────────────────────────────────────
@@ -366,7 +409,7 @@ class ScheduleViewModel(
             }
             _termEdit.value = TermEditState()
             goToWeek(currentWeek())
-            _message.value = "学期设置已保存"
+            pushMessage("学期设置已保存")
         }
     }
 
@@ -375,7 +418,7 @@ class ScheduleViewModel(
         // 防止任何调用方（含将来的批量导入）把非法时间写进库。
         // 注意不能用宽容的 minutesOf 校验——它会把 "08:70" 容错成 08:59 后放行。
         if (!GridClock.isValidRange(start, end)) {
-            _message.value = "时间格式不对，或结束早于开始（如 08:00 / 09:40），未保存"
+            pushMessage("时间格式不对，或结束早于开始（如 08:00 / 09:40），未保存")
             return
         }
         viewModelScope.launch {
@@ -402,14 +445,14 @@ class ScheduleViewModel(
         val next = store.nextPeriod(term.id, existing)
         viewModelScope.launch {
             withContext(ioDispatcher) { store.insertPeriod(next) }
-            _message.value = "已添加第 ${next.index} 节（${next.startTime}-${next.endTime}），可继续修改时间"
+            pushMessage("已添加第 ${next.index} 节（${next.startTime}-${next.endTime}），可继续修改时间")
         }
     }
 
     /** 删除一节，同时清理占用该节的课程，避免留下看不见的脏数据 */
     fun deletePeriod(period: Period) {
         if (_periods.value.size <= 1) {
-            _message.value = "至少要保留一节"
+            pushMessage("至少要保留一节")
             return
         }
         viewModelScope.launch {
@@ -426,7 +469,7 @@ class ScheduleViewModel(
             // 文案用删除前捕获的 period.index 和 IO 块里数出来的受影响课程数，
             // 不读 _periods：Room 的 Flow 还没重发，那是删除前的旧快照，读了会显示错
             val extra = if (affectedCount > 0) "，同时清理了占用该节的 $affectedCount 门课程" else ""
-            _message.value = "已删除第 ${period.index} 节$extra"
+            pushMessage("已删除第 ${period.index} 节$extra")
         }
     }
 
@@ -444,18 +487,18 @@ class ScheduleViewModel(
             isZipMagic(bytes) -> {
                 val term = _term.value
                 if (term == null) {
-                    _message.value = "学期信息还没准备好，稍后再试"
+                    pushMessage("学期信息还没准备好，稍后再试")
                     return
                 }
                 openCourseImport(XlsxCodec.parse(bytes, term, _periods.value))
             }
             isOleMagic(bytes) -> {
-                _message.value = "暂不支持 .xls 旧格式，请用 Excel / WPS 另存为 .xlsx 后再导入"
+                pushMessage("暂不支持 .xls 旧格式，请用 Excel / WPS 另存为 .xlsx 后再导入")
             }
             else -> {
                 val text = String(bytes, Charsets.UTF_8).removePrefix("\uFEFF")
                 if (text.isBlank()) {
-                    _message.value = "无法读取该文件（可能已损坏或是空文件）"
+                    pushMessage("无法读取该文件（可能已损坏或是空文件）")
                 } else {
                     importFileText(text)
                 }
@@ -478,15 +521,23 @@ class ScheduleViewModel(
         when (FormatSniffer.sniff(text)) {
             FormatSniffer.FileFormat.JSON -> previewJsonImport(text)
             FormatSniffer.FileFormat.ICS -> {
-                val term = _term.value
-                if (term == null) {
-                    _message.value = "学期信息还没准备好，稍后再试"
+                val term = _term.value ?: run {
+                    pushMessage("学期信息还没准备好，稍后再试")
                     return
                 }
                 // ICS 的节次匹配依赖当前学期的节次快照；解析是纯函数，直接调
                 openCourseImport(IcsCodec.parse(text, term, _periods.value))
             }
-            FormatSniffer.FileFormat.CSV -> openCourseImport(CsvCodec.parse(text))
+            FormatSniffer.FileFormat.CSV -> {
+                val term = _term.value ?: run {
+                    pushMessage("学期信息还没准备好，稍后再试")
+                    return
+                }
+                // 周次/节次的规范化口径与手工录入一致：裁剪到学期总周数、收敛到节次表
+                openCourseImport(
+                    CsvCodec.parse(text, term.totalWeeks, _periods.value.maxOfOrNull { it.index } ?: 1),
+                )
+            }
         }
     }
 
@@ -494,17 +545,17 @@ class ScheduleViewModel(
     fun importPasteText(text: String) {
         val term = _term.value
         if (term == null) {
-            _message.value = "学期信息还没准备好，稍后再试"
+            pushMessage("学期信息还没准备好，稍后再试")
             return
         }
         openCourseImport(
-            PasteParser.parse(text, term.totalWeeks, _periods.value.size),
+            PasteParser.parse(text, term.totalWeeks, _periods.value.maxOfOrNull { it.index } ?: 1),
         )
     }
 
     private fun openCourseImport(report: com.classschedule.app.data.backup.ParseReport) {
         if (report.courses.isEmpty() && report.issues.isEmpty()) {
-            _message.value = "没有解析到任何课程，请检查文件内容"
+            pushMessage("没有解析到任何课程，请检查文件内容")
             return
         }
         val plan = ImportPlanner.plan(_courses.value, report.courses, ImportStrategy.APPEND)
@@ -539,12 +590,14 @@ class ScheduleViewModel(
                 store.importCourses(term.id, s.courses, s.strategy)
             }
             _courseImport.value = CourseImportState()
-            // 批量写入之后，单课撤销的上下文已失效，清掉避免误恢复
-            lastDeleted = null
-            _message.value = buildString {
-                append("已导入 ${counts.inserted} 门课程")
-                if (counts.skipped > 0) append("，跳过已存在的 ${counts.skipped} 门")
-            }
+            // 课程级导入没有撤销凭据：pushMessage 默认会清空上一个待撤销动作，
+            // 提示条上的「撤销」也会因 canUndo()==false 而不显示（不再给空按钮）
+            pushMessage(
+                buildString {
+                    append("已导入 ${counts.inserted} 门课程")
+                    if (counts.skipped > 0) append("，跳过已存在的 ${counts.skipped} 门")
+                },
+            )
         }
     }
 
@@ -581,8 +634,17 @@ class ScheduleViewModel(
                     snapshot = store.snapshotAll()
                     store.replaceAllData(parsed)
                     // 文案在 IO 块里就地生成：此时 parsed 必然非空，不需要 !! 兜底
-                    summary = "已恢复备份：${parsed.terms.size} 个学期 / " +
-                        "${parsed.periods.size} 个节次 / ${parsed.courses.size} 门课程"
+                    summary = buildString {
+                        append(
+                            "已恢复备份：${parsed.terms.size} 个学期 / " +
+                                "${parsed.periods.size} 个节次 / ${parsed.courses.size} 门课程",
+                        )
+                        // 当前只有单学期 UI：多于一个学期时，除了"当前"那个其余看不到，
+                        // 明确告知，免得用户以为恢复丢了数据
+                        if (parsed.terms.size > 1) {
+                            append("（App 目前只显示当前学期，其余学期暂不可见）")
+                        }
+                    }
                 } catch (e: JsonException) {
                     error = "备份文件结构有问题：${e.message}"
                 } catch (e: IllegalArgumentException) {
@@ -597,11 +659,10 @@ class ScheduleViewModel(
                 _jsonImport.value = _jsonImport.value.copy(error = error)
                 return@launch
             }
-            importUndoSnapshot = snapshot
-            lastDeleted = null
+            val snap = snapshot ?: return@launch
             pendingJsonText = null
             _jsonImport.value = JsonImportState()
-            _message.value = summary
+            pushMessage(summary, PendingUndo.RestoreBackup(snap))
         }
     }
 
@@ -611,20 +672,23 @@ class ScheduleViewModel(
     }
 
     /**
-     * 统一的撤销入口（Snackbar 的"撤销"按钮）：
-     * 有导入快照就恢复整库，否则按单课删除撤销。
-     * 两者互斥——导入成功时会清掉 lastDeleted，删除时不会有导入快照。
+     * 统一的撤销入口（提示条的"撤销"按钮）。按当前待撤销动作分派：
+     *   - RestoreBackup：恢复导入前的整库快照；
+     *   - DeleteCourse：恢复刚删掉的那门课；
+     *   - None：无操作（UI 也不会显示按钮）。
+     * 凭据随消息一起被消费，所以"撤销"永远只作用于它那条提示对应的那次操作。
      */
     fun undoLast() {
-        val snapshot = importUndoSnapshot
-        if (snapshot != null) {
-            importUndoSnapshot = null
-            viewModelScope.launch {
-                withContext(ioDispatcher) { store.replaceAllData(snapshot) }
-                _message.value = "已恢复到导入前的数据"
+        when (val pending = pendingUndo) {
+            is PendingUndo.RestoreBackup -> {
+                pendingUndo = PendingUndo.None
+                viewModelScope.launch {
+                    withContext(ioDispatcher) { store.replaceAllData(pending.data) }
+                    pushMessage("已恢复到导入前的数据")
+                }
             }
-        } else {
-            undoDelete()
+            is PendingUndo.DeleteCourse -> undoDelete()
+            PendingUndo.None -> Unit
         }
     }
 

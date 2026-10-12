@@ -16,6 +16,16 @@ object WeekRanges {
     private const val MAX_WEEK = 60
 
     /**
+     * 区间分隔符的公共集合：`-`、`~`、`～`（全角波浪）、`—`（em dash）、
+     * `–`（en dash）、`－`（全角减号）。周次、节次等各处解析都取自这里，
+     * 避免"某一处认 en dash、另一处不认"的口径分裂。
+     */
+    val RANGE_SEPARATORS: Set<Char> = setOf('-', '~', '～', '—', '–', '－')
+
+    /** [RANGE_SEPARATORS] 的字符类写法，供 Regex 拼接（额外含中文"至 / 到"） */
+    const val RANGE_SEPARATOR_CLASS: String = "\\-~～—–－至到"
+
+    /**
      * 解析表达式为周次集合。无法识别的片段会被忽略。
      * @return 升序去重后的周次集合
      */
@@ -25,8 +35,8 @@ object WeekRanges {
             val part = rawPart.trim()
             if (part.isEmpty()) continue
 
-            // 支持 1-8、1~8、1—8 等写法
-            val range = part.split('-', '~', '—', '－')
+            // 支持 1-8、1~8、1～8、1—8、1–8、1－8 等写法（分隔符集合见 RANGE_SEPARATORS）
+            val range = part.split(*RANGE_SEPARATORS.toCharArray())
             if (range.size == 2) {
                 val a = range[0].trim().toIntOrNull()
                 val b = range[1].trim().toIntOrNull()

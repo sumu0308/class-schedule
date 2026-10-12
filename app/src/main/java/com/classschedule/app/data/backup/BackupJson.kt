@@ -56,7 +56,25 @@ object BackupJson {
         courses.forEach { c ->
             if (c.termId !in termIds) throw IllegalArgumentException("课程「${c.name}」引用了不存在的学期 id=${c.termId}")
         }
-        return BackupData(terms, periods, courses)
+        // 不变量：有学期时"有且仅有一个当前学期"。第三方工具可能省略 isCurrent，
+        // 或历史数据残留多个；按 observeCurrent（开学日倒序取第一条）的口径统一成
+        // "开学最晚的那个为当前"。否则该字段缺失的备份会一路通过确认、恢复后却查不到
+        // 当前学期 → 课表永久空白，而 App 内没有任何入口能找回来。
+        val normalizedTerms = normalizeCurrent(terms)
+        return BackupData(normalizedTerms, periods, courses)
+    }
+
+    /**
+     * 把 isCurrent 归一成"恰好一个"（学期非空时）：
+     * 取 (startEpochDay, id, 下标) 最大的那条为当前，其余全部置 false。
+     * 用下标兜底是为防 id 缺失时多条同分，保证结果确定且真的只有一个 true。
+     */
+    private fun normalizeCurrent(terms: List<Term>): List<Term> {
+        if (terms.isEmpty()) return terms
+        val currentIdx = terms.indices.maxWithOrNull(
+            compareBy({ terms[it].startEpochDay }, { terms[it].id }, { it }),
+        ) ?: return terms
+        return terms.mapIndexed { i, t -> t.copy(isCurrent = i == currentIdx) }
     }
 
     private fun decodeTerm(raw: Any?, i: Int): Term {

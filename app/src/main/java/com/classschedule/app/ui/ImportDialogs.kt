@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.classschedule.app.CourseImportState
 import com.classschedule.app.JsonImportState
 import com.classschedule.app.data.backup.ImportStrategy
+import com.classschedule.app.util.TermCalendar
 
 /**
  * 导入相关的三个弹窗（计划文档第十章；导出功能 0.10.0 已移除）。
@@ -139,6 +140,39 @@ fun CourseImportDialog(
                     )
                 }
 
+                // ── 识别到的课程：确认前能核对教师 / 教室有没有错位 ──
+                if (state.courses.isNotEmpty()) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    Text(
+                        text = "识别到的课程（共 ${state.courses.size} 门，核对教师 / 教室）：",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 160.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        state.courses.take(20).forEach { c ->
+                            Text(
+                                text = "${c.name}｜教师 ${c.teacher ?: "—"}｜教室 ${c.room ?: "—"}" +
+                                    "｜${TermCalendar.dayShort(c.dayOfWeek)} 第 ${c.startPeriodIndex}-" +
+                                    "${c.startPeriodIndex + c.periodCount - 1} 节",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        if (state.courses.size > 20) {
+                            Text(
+                                text = "……其余 ${state.courses.size - 20} 门从略",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
                 // ── 未识别行 ──
                 if (state.issues.isNotEmpty()) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
@@ -238,7 +272,7 @@ fun JsonImportDialog(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
-                        text = "恢复将**整库覆盖**当前所有数据（当前数据会先自动留一份撤销快照，" +
+                        text = "恢复会整库覆盖当前所有数据（当前数据会先自动留一份撤销快照，" +
                             "导入成功后可在消息栏点「撤销」恢复）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,

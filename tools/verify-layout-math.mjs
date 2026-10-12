@@ -1,13 +1,18 @@
 /**
  * verify-layout-math.mjs — 独立复算课表排版的关键数值。
  *
+ * ⚠ 重要：本脚本守的是 **0.8.0 前已下线的历史算法**（"行高随时长成比例"那套）。
+ *   现行渲染（0.8.0 起）是 ScheduleGrid.kt 里固定的卡片式布局，与本脚本算的不是同一套，
+ *   单独跑本脚本得到的"通过"只代表历史公式自洽，不代表当前课表排版正确。
+ *   保留脚本与 GridGeometryTest 的原因见计划文档 2.6 / I-7 / R-14（算法推导与踩坑记录）。
+ *
  * 这里刻意用 Node 把 Kotlin 里的算法重写一遍（而非直接读 Kotlin 输出），
  * 目的是"两套独立实现互相验证"：两边算出的数不一致，说明有一方是错的。
  * 镜像对象：`app/src/main/java/com/classschedule/app/ui/ScheduleGrid.kt`
  *   GridMetrics       → ScheduleGrid.kt:65-134
  *   GridGeometry.build → ScheduleGrid.kt:242-306
  *
- * 口径以现行代码为准（v0.7.0，ScheduleGrid.kt 的注释里也写了同一套）：
+ * 历史口径（v0.7.0 时点，ScheduleGrid.kt 的历史注释里也写了同一套）：
  *   ① 一行 = 一个大节（PERIODS_PER_BLOCK = 2 个小节两两配对），行高按真实时长成比例；
  *   ② 兜底系数 FALLBACK_PX_PER_MINUTE = 1.45 —— 40 分钟的小节正好 58 dp；
  *   ③ 屏幕放不下时**向下**压缩，但不低于 MIN_PX_PER_MINUTE = 0.95，再放不下就滚动；

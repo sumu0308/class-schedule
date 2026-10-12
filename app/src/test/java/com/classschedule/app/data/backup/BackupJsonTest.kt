@@ -82,6 +82,45 @@ class BackupJsonTest {
         assertNull(p.error)
     }
 
+    // ── isCurrent 不变量归一（回归：缺该字段不会让恢复后课表永久空白） ──
+
+    @Test
+    fun `缺isCurrent字段_解码后恰好一个当前学期_取开学最晚的`() {
+        // 字段级 REST 语义下第三方工具可能省略 isCurrent；若不归一，
+        // 恢复后会查不到当前学期 → 课表永久空白且 App 内无入口找回
+        val text = """
+            {"format":"class-schedule-backup","version":1,
+             "terms":[
+               {"id":1,"name":"2025 秋","startEpochDay":20000,"totalWeeks":20},
+               {"id":2,"name":"2026 春","startEpochDay":20454,"totalWeeks":20}],
+             "periods":[],"courses":[]}
+        """.trimIndent()
+        val data = BackupJson.decode(text)
+        assertEquals(1, data.terms.count { it.isCurrent })
+        assertEquals("2026 春", data.terms.single { it.isCurrent }.name)
+    }
+
+    @Test
+    fun `多个isCurrent_归一为开学最晚的一个`() {
+        val text = """
+            {"format":"class-schedule-backup","version":1,
+             "terms":[
+               {"id":1,"name":"A","startEpochDay":20000,"totalWeeks":20,"isCurrent":true},
+               {"id":2,"name":"B","startEpochDay":20454,"totalWeeks":20,"isCurrent":true}],
+             "periods":[],"courses":[]}
+        """.trimIndent()
+        val data = BackupJson.decode(text)
+        assertEquals(1, data.terms.count { it.isCurrent })
+        assertEquals("B", data.terms.single { it.isCurrent }.name)
+    }
+
+    @Test
+    fun `原本就只有一个当前学期时不被改动`() {
+        val data = BackupJson.decode(validJson)
+        assertEquals(1, data.terms.count { it.isCurrent })
+        assertEquals(2L, data.terms.single { it.isCurrent }.id)
+    }
+
     // ── 畸形输入：有原因、不写库 ────────────────────────────
 
     private fun assertRejected(text: String, hint: String) {

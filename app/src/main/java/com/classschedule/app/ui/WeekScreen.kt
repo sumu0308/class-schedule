@@ -115,8 +115,14 @@ fun WeekScreen(vm: ScheduleViewModel) {
 
     LaunchedEffect(message) {
         val m = message ?: return@LaunchedEffect
-        val result = snackbar.showSnackbar(message = m, actionLabel = "撤销", withDismissAction = true)
-        // undoLast：有导入快照就整库恢复，否则撤销单课删除
+        // 只有当前消息带可撤销动作时才挂「撤销」，否则不给一个点了没反应的按钮
+        val actionLabel = if (vm.canUndo()) "撤销" else null
+        val result = snackbar.showSnackbar(
+            message = m,
+            actionLabel = actionLabel,
+            withDismissAction = true,
+        )
+        // undoLast：按当前待撤销动作分派（整库快照恢复 / 单课删除恢复）
         if (result == SnackbarResult.ActionPerformed) vm.undoLast()
         vm.consumeMessage()
     }
@@ -479,9 +485,26 @@ private fun weekRangeText(term: Term?, week: Int): String {
 private fun androidx.compose.ui.graphics.Color.luminanceOf(): Float =
     0.299f * red + 0.587f * green + 0.114f * blue
 
-/** 读 SAF 选中的文件为字节数组；失败返回 null */
+/**
+ * 读取 SAF 选中的文件为字节数组；失败或超过上限返回 null。
+ * 设上限是因为文件大小不可信：一个被塞进超大内容的"课表"不该把内存吃光。
+ */
+private const val MAX_IMPORT_BYTES = 16 * 1024 * 1024
+
 private fun readBytes(context: Context, uri: Uri): ByteArray? = try {
-    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > MAX_IMPORT_BYTES) return@use null
+            out.write(buf, 0, n)
+        }
+        out.toByteArray()
+    }
 } catch (e: Exception) {
     null
 }

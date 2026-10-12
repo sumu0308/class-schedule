@@ -41,6 +41,9 @@ object XlsxCodec {
     fun parse(bytes: ByteArray, term: Term, periods: List<Period>): ParseReport {
         val entries = try {
             readZipEntries(bytes)
+        } catch (e: IllegalStateException) {
+            // 解压上限被触发：给出具体原因，别一律说成"结构损坏"
+            return ParseReport("XLSX", emptyList(), listOf(ParseIssue("文件", e.message ?: "无法读取 xlsx")))
         } catch (e: Exception) {
             return ParseReport("XLSX", emptyList(), listOf(ParseIssue("文件", "无法读取 xlsx（zip 结构损坏或不是 xlsx）")))
         }
@@ -68,7 +71,7 @@ object XlsxCodec {
             val report = if (matrix != null) {
                 parseMatrix(grid, matrix, term, periods, sheet.name)
             } else {
-                parseListLayout(grid, sheet.name)
+                parseListLayout(grid, sheet.name, term, periods)
             }
             if (report.courses.isNotEmpty()) {
                 return report
@@ -87,19 +90,46 @@ object XlsxCodec {
 
     // ── zip 与 xml ──────────────────────────────────────────
 
-    /** 读 zip 内全部条目为字节数组；entry 名归一（去前导 ./） */
+    /** 解压上限：xlsx 内容不可信，异常文件可解出超大条目把内存吃光（纯本地风险低，仍设几行兜底） */
+    private const val MAX_ZIP_ENTRIES = 1024
+    private const val MAX_ENTRY_BYTES = 8 * 1024 * 1024
+    private const val MAX_TOTAL_BYTES = 32 * 1024 * 1024
+
+    /** 读 zip 内全部条目为字节数组；entry 名归一（去前导 ./），并施加条目数/体积上限 */
     private fun readZipEntries(bytes: ByteArray): Map<String, ByteArray> {
         val out = mutableMapOf<String, ByteArray>()
+        var total = 0
+        var count = 0
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    out[entry.name.removePrefix("./")] = zip.readBytes()
+                    if (++count > MAX_ZIP_ENTRIES) throw IllegalStateException("压缩包条目过多，不是有效的 xlsx")
+                    val data = readEntryCapped(zip, MAX_ENTRY_BYTES, MAX_TOTAL_BYTES - total)
+                    total += data.size
+                    out[entry.name.removePrefix("./")] = data
                 }
                 entry = zip.nextEntry
             }
         }
         return out
+    }
+
+    /** 读当前 zip 条目（带上限）；超限抛 IllegalStateException，由 parse 转成可读提示 */
+    private fun readEntryCapped(zip: ZipInputStream, perEntry: Int, totalLeft: Int): ByteArray {
+        val limit = minOf(perEntry, totalLeft)
+        if (limit <= 0) throw IllegalStateException("压缩包解压后过大，不是有效的 xlsx")
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
+        var size = 0
+        while (true) {
+            val n = zip.read(buf)
+            if (n < 0) break
+            size += n
+            if (size > limit) throw IllegalStateException("压缩包解压后过大，不是有效的 xlsx")
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     /** 禁用 DTD / 外部实体的 DOM 工厂：xlsx 内容不可信，防 XXE */
@@ -327,13 +357,13 @@ object XlsxCodec {
     // 节次词：整体匹配（纯 "1-2" / "第三节" / "3"）与**前缀匹配**
     // （合体写法 "1-2节08:00:00-09:40:00"——真实教务系统导出就这样，见 10.2.5）。
     // "节"字一律可选：纯 "1-2" 与合体 "1-2节…" 都要认。
-    private val PERIOD_RANGE_PREFIX = Regex("^第?\\s*(\\d{1,2})\\s*[-~—–～至到]\\s*(\\d{1,2})\\s*节?")
+    private val PERIOD_RANGE_PREFIX = Regex("^第?\\s*(\\d{1,2})\\s*[${WeekRanges.RANGE_SEPARATOR_CLASS}]\\s*(\\d{1,2})\\s*节?")
     private val PERIOD_LIST_PREFIX = Regex("^第?\\s*(\\d{1,2})\\s*[、,，]\\s*(\\d{1,2})\\s*节?")
     private val PERIOD_BIG_PREFIX = Regex("^第?\\s*([一二三四五六七八九十]{1,2})\\s*大节")
     private val PERIOD_CN_PREFIX = Regex("^第?\\s*([一二三四五六七八九十]{1,3})\\s*节?")
     private val PERIOD_NUM_PREFIX = Regex("^第?\\s*(\\d{1,2})\\s*节")
     private val PERIOD_NUM = Regex("^(\\d{1,2})$")
-    private val PERIOD_TIME = Regex("^(\\d{1,2}):(\\d{2})\\s*[-~—–～至到]\\s*(\\d{1,2}):(\\d{2})$")
+    private val PERIOD_TIME = Regex("^(\\d{1,2}):(\\d{2})\\s*[${WeekRanges.RANGE_SEPARATOR_CLASS}]\\s*(\\d{1,2}):(\\d{2})$")
 
     private val CN_NUM = mapOf(
         "一" to 1, "二" to 2, "三" to 3, "四" to 4, "五" to 5,
@@ -455,8 +485,19 @@ object XlsxCodec {
     ): ParseReport {
         val courses = mutableListOf<ParsedCourse>()
         val issues = mutableListOf<ParseIssue>()
+        val maxPeriod = periods.maxOfOrNull { it.index } ?: 1
         for ((row, span) in m.periodOfRow) {
             val (start, count) = span
+            // 行头节次超出当前节次表 → 该行的课会静默不可见，逐行报错（口径同 CSV/粘贴）
+            if (start < 1 || start + count - 1 > maxPeriod) {
+                if (m.dayOfColumn.keys.any { grid.at(row, it).isNotEmpty() }) {
+                    issues += ParseIssue(
+                        "工作表「$sheetName」第 ${row + 1} 行",
+                        "节次 $start-${start + count - 1} 超出当前学期的 1–$maxPeriod 节",
+                    )
+                }
+                continue
+            }
             for ((col, day) in m.dayOfColumn) {
                 val cell = grid.at(row, col)
                 if (cell.isEmpty()) continue
@@ -546,7 +587,7 @@ object XlsxCodec {
         class Other(val text: String) : UnitKind()
     }
 
-    private val WEEK_TOKEN = Regex("^第?\\s*\\d{1,2}(\\s*[-~—–～至到,，、]\\s*\\d{1,2})+\\s*周?$")
+    private val WEEK_TOKEN = Regex("^第?\\s*\\d{1,2}(\\s*[${WeekRanges.RANGE_SEPARATOR_CLASS},，、]\\s*\\d{1,2})+\\s*周?$")
 
     private fun classifyUnit(unit: String): UnitKind {
         val u = unit.trim()
@@ -562,30 +603,10 @@ object XlsxCodec {
             else -> null
         }
         if (parity != null) return UnitKind.Parity(parity)
-        if (looksLikeRoom(u)) return UnitKind.Room(u)
-        if (looksLikeTeacher(u)) return UnitKind.Teacher(u)
+        if (FieldHeuristics.looksLikeRoom(u)) return UnitKind.Room(u)
+        if (FieldHeuristics.looksLikeTeacher(u)) return UnitKind.Teacher(u)
         return UnitKind.Other(u)
     }
-
-    /**
-     * 教师行：短文本，或逗号分隔的多个短名（"赵小峰,钱思琪"）。
-     * 每段 ≤6 字才认——长句（备注）进 note 不误伤。
-     */
-    private fun looksLikeTeacher(text: String): Boolean {
-        if (text.length > 12) return false
-        val parts = text.split(',', '，')
-        return parts.all { it.isNotBlank() && it.length <= 6 }
-    }
-
-    private val ROOM_KEYWORDS = listOf(
-        "楼", "室", "馆", "场", "房", "阶梯", "实验", "语音", "多媒体",
-        "机房", "礼堂", "操场", "篮球", "足球", "排球", "羽毛球", "校区", "远程",
-    )
-    // 教室代码：`XC514` / `XD1` / `XA3`（教务系统常用字母+数字编号，位数不定）
-    private val ROOM_CODE = Regex("^[A-Za-z]{1,3}\\d{1,4}$")
-
-    private fun looksLikeRoom(text: String): Boolean =
-        ROOM_KEYWORDS.any { text.contains(it) } || ROOM_CODE.matchEntire(text.trim()) != null
 
     // ── 列表布局（复用 CSV 行解析） ──────────────────────────
 
@@ -594,7 +615,7 @@ object XlsxCodec {
      * 预处理：dayOfWeek 列（第 4 列）若是"周一/一/Monday"文本先转数字——
      * 教务系统的列表导出常用文本星期，CsvCodec 只认 1–7。
      */
-    private fun parseListLayout(grid: Grid, sheetName: String): ParseReport {
+    private fun parseListLayout(grid: Grid, sheetName: String, term: Term, periods: List<Period>): ParseReport {
         val records = grid.rows
             .filter { row -> row.any { it.isNotBlank() } }
             .map { row ->
@@ -604,7 +625,8 @@ object XlsxCodec {
                     }
                 }.toList()
             }
-        val report = CsvCodec.parseRecords(records)
+        // 与手工录入同口径：周次裁剪到学期总周数、节次收敛到节次表
+        val report = CsvCodec.parseRecords(records, term.totalWeeks, periods.maxOfOrNull { it.index } ?: 1)
         return report.copy(
             format = "XLSX（$sheetName）",
             issues = report.issues.map { ParseIssue("工作表「$sheetName」${it.location}", it.reason) },

@@ -3,8 +3,13 @@
 
     <!-- 单机版：默认不申请任何权限。上课提醒所需的通知权限在 M3 阶段再按需加入。 -->
 
+    <!--
+      allowBackup 关闭：App 反复强调"数据只在你手机里"，若开启，系统会把
+      class_schedule.db 纳入云备份，与这一语义冲突。需要迁移设备时请用 App 内的
+      JSON 备份/恢复（侧边栏 → 从文件导入）。
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"

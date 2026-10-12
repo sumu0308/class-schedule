@@ -109,7 +109,11 @@ data class Course(
 
 /**
  * 简单的键值表，用于记录"一次性迁移是否已执行"这类状态。
- * 单独建表而不是塞进 SharedPreferences，是为了让备份/恢复能一起带走。
+ *
+ * 单独建表而不是塞进 SharedPreferences：它是**设备本地的迁移状态**（例如"旧默认作息
+ * 是否已经换成新模板"），需要和业务数据同库、可参与同一事务，且**刻意不纳入 JSON 备份**
+ * ——跨设备/跨版本把"迁移已执行"的标记一起搬过去，反而会让目标机器跳过该做的迁移
+ * （见 BackupData 只含 term / period / course 三张业务表）。
  */
 @Entity(tableName = "app_setting")
 data class AppSetting(

@@ -62,7 +62,9 @@ fun CourseEditorDialog(
 ) {
     if (!state.visible) return
     val scroll = rememberScrollState()
-    val periodCount = periods.size.coerceAtLeast(1)
+    // 范围上界取"节次的最大序号"而非条数：删掉中间一节后 index 会有断层
+    // （如 {1,2,4,…,8}），按条数取会让显示值与落库值对不上。
+    val maxPeriod = periods.maxOfOrNull { it.index } ?: 1
 
     // 大节分组：课程编辑里用"第 N 大节"做快捷选择
     val majorBlocks = remember(periods) {
@@ -150,7 +152,7 @@ fun CourseEditorDialog(
                     NumberPicker(
                         label = "从",
                         value = state.startPeriod,
-                        range = 1..periodCount,
+                        range = 1..maxPeriod,
                         onChange = { v ->
                             onUpdate {
                                 it.copy(startPeriod = v, endPeriod = maxOf(v, it.endPeriod))
@@ -160,7 +162,7 @@ fun CourseEditorDialog(
                     NumberPicker(
                         label = "到",
                         value = state.endPeriod,
-                        range = state.startPeriod..periodCount,
+                        range = state.startPeriod..maxPeriod,
                         onChange = { v -> onUpdate { it.copy(endPeriod = v) } },
                     )
                 }

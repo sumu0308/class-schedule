@@ -7,11 +7,14 @@ import com.classschedule.app.util.WeekRanges
  * 粘贴课表文本解析器（F-31 的"粘贴文本"入口，语法见计划文档 10.2.4）。
  *
  * 每行一门课，空格/制表符分隔，从星期 token 向前推：前一 token 是教室、
- * 再前一是教师、其余是课名——所以课名可以含空格，教师教室可用 `-` 占位：
+ * 再前一是教师、其余是课名——所以课名可以含空格，教师教室可用 `-` 占位。
+ * 星期前只剩一个 token 时按"像不像教室"分流（更像教师就判教师），
+ * 兼容用户按提示语顺序只写「课程名 教师」、省略教室的写法。
  *
  * ```
  * 高等数学 张老师 A101 周一 1-2 1-16周
- * 大学英语 - B203 周三 3-4
+ * 大学英语 李老师 周三 3-4        ← 省略教室：李老师判为教师
+ * 大学英语 - B203 周三 3-4        ← 用 - 占位教师
  * # 这是注释
  * ```
  *
@@ -50,10 +53,34 @@ object PasteParser {
             }
             val dayOfWeek = WEEKDAYS.getValue(tokens[weekdayIdx])
 
-            // 星期之前：最后一个 token 是教室，倒数第二个是教师，其余拼接为课名
-            val room = tokens.getOrNull(weekdayIdx - 1)?.takeIf { it != "-" && weekdayIdx - 1 > 0 }
-            val teacher = tokens.getOrNull(weekdayIdx - 2)?.takeIf { it != "-" && weekdayIdx - 2 > 0 }
-            val name = tokens.subList(0, (weekdayIdx - 2).coerceAtLeast(1)).joinToString(" ")
+            // 星期之前的部分：常规是「…课名 教师 教室」，即倒数第二个是教师、
+            // 最后一个是教室，可用 `-` 占位。
+            // 只剩 1 个 token 时不能一律当教室：按提示语顺序「课程名 教师 教室」，
+            // 用户省略教室时这里写的就是教师；用"像不像教室"分流，判不出才当教师，
+            // 避免把教师名塞进教室字段（省略教室的常见写法）。
+            val before = tokens.subList(0, weekdayIdx)
+            val name: String
+            val teacher: String?
+            val room: String?
+            when {
+                before.size <= 1 -> {
+                    name = before.joinToString(" ")
+                    teacher = null
+                    room = null
+                }
+                before.size == 2 -> {
+                    name = before[0]
+                    val slot = before[1].takeIf { it != "-" }
+                    val isRoom = slot != null && FieldHeuristics.looksLikeRoom(slot)
+                    teacher = slot?.takeIf { !isRoom }
+                    room = slot?.takeIf { isRoom }
+                }
+                else -> {
+                    name = before.subList(0, before.size - 2).joinToString(" ")
+                    teacher = before[before.size - 2].takeIf { it != "-" }
+                    room = before[before.size - 1].takeIf { it != "-" }
+                }
+            }
             if (name.isBlank()) {
                 issues += ParseIssue(at, "课名为空（教师教室可用 - 占位）")
                 return@forEachIndexed
@@ -123,7 +150,11 @@ object PasteParser {
 
     /** "3-4" / "3-4节" / "第3-4节" / "3" → (起始节次, 占用节数) */
     private fun parsePeriods(token: String): Pair<Int, Int>? {
-        val t = token.removePrefix("第").removeSuffix("节").replace('~', '-').replace('—', '-').replace('－', '-')
+        // 区间分隔符统一走 WeekRanges 的公共集合（含 en dash 与全角波浪号），
+        // 不再各处各写一套——否则 "1–2" 这种从网页复制来的写法会认不出
+        val t = token.removePrefix("第").removeSuffix("节")
+            .map { if (it in WeekRanges.RANGE_SEPARATORS) '-' else it }
+            .joinToString("")
         val parts = t.split('-')
         val start = parts[0].toIntOrNull() ?: return null
         if (parts.size == 1) return start to 1

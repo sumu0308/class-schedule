@@ -2,7 +2,7 @@
 
 | 项目代号 | 文档版本 | 状态 | 编制角色 |
 | --- | --- | --- | --- |
-| class-schedule | v1.7 | M1 + M2 已完成并交付（内部 APK 至 0.4.0；**0.8.0** 卡片式课表改版已发布 GitHub Release）；M3 上课提醒**暂缓**（用户决策：单一用户自用非必需）；**M4 文件导入代码完成**（设计见第十章；导出功能经用户决策移除，仅保留导入；**0.11.0 起支持教务系统导出的 .xlsx 课表、文件选择器 MIME 放开为 \*/\***，见 10.2.5 / 10.4；0.11.1 用**真实教务样本验证通过**（合体节次行头 / `_x000D_` 残留 / 教室代码 / 多教师四类变体，见 10.2.5 实测结论）；0.10.0 起为汉堡侧边栏导航，见 10.7；真机整体验收待用户确认） | Android 应用架构与产品规划技术人员 |
+| class-schedule | v1.7 | M1 + M2 已完成并交付（内部 APK 至 0.4.0；**0.8.0** 卡片式课表改版已发布 GitHub Release）；M3 上课提醒**暂缓**（用户决策：单一用户自用非必需）；**M4 文件导入代码完成**（设计见第十章；导出功能经用户决策移除，仅保留导入；**0.11.0 起支持教务系统导出的 .xlsx 课表、文件选择器 MIME 放开为 \*/\***，见 10.2.5 / 10.4；0.11.1 用**真实教务样本验证通过**（合体节次行头 / `_x000D_` 残留 / 教室代码 / 多教师四类变体，见 10.2.5 实测结论）；**0.11.2 完成一轮代码审查缺陷修复**（P1 节次断层挪课 / 粘贴教师错位，P2 空周次 / 恢复无当前学期 / 撤销作用域，P3 导入列宽松与口径统一；单测 181 → 197）；0.10.0 起为汉堡侧边栏导航，见 10.7；真机整体验收待用户确认） | Android 应用架构与产品规划技术人员 |
 
 **阅读约定**
 
@@ -517,7 +517,7 @@ ImportSource(适配器配置) 1 ── n ImportRecord(导入历史，含日志�
 | D1 | 从 v1 起即编写 `Migration`，禁止 `fallbackToDestructiveMigration` | **已执行**：`AppDatabase.VERSION = 2`，`MIGRATIONS` 内含 `Migration(1, 2)`（建 `app_setting` 表），`AppDatabaseProvider` 里调用 `.addMigrations(*AppDatabase.MIGRATIONS)`，**未使用** destructive fallback。改表结构的规矩：版本 +1 并补一条迁移 |
 | D2 | 每次结构变更同时更新 `import` 的 JSON schema 版本号 | **已落地**（M4）：`BackupJson.VERSION = 1`，导入时拒绝版本更新的文件并提示升级 App。**导出已移除（0.10.0），版本号仅服务于导入方向的兼容判断** |
 | D3 | JSON 导入时对未知字段忽略、对缺失字段取默认值，保证旧备份可导入 | 计划（M4） |
-| D4 | 单测覆盖：空库首启、旧版本迁移、备份往返（export → import 后数据一致） | **大部分覆盖**：现有 **162 例**覆盖周次表达式解析（20）、日期/周次换算、网格排版（26，含 4 条比例系数防回归 + 1 条取值断言）、大节分组（10）、**ScheduleViewModel 业务逻辑（29：学期切换刷新、保存校验、级联删除、撤销、时间校验、三种导入策略、JSON 恢复与撤销）**、**时间解析（6）**、**M4 编解码（71：JSON 往返与 10 类畸形拒绝、CSV 往返与坏行报告、ICS 显示集合往返与 RRULE/折叠、粘贴文本语法、去重键与格式嗅探）**（见 7.2）；**空库首启、`Migration(1,2)` 仍无单测**，是已知缺口 |
+| D4 | 单测覆盖：空库首启、旧版本迁移、备份往返（export → import 后数据一致） | **大部分覆盖**：现有 **197 例**覆盖周次表达式解析（20）、日期/周次换算、网格排版（26，含 4 条比例系数防回归 + 1 条取值断言）、大节分组（10）、**ScheduleViewModel 业务逻辑（33：学期切换刷新、保存校验、级联删除、撤销作用域、时间校验、节次断层、三种导入策略、JSON 恢复与撤销）**、**时间解析（6）**、**M4 编解码（102：JSON 往返与 10 类畸形拒绝、CSV 列宽松与坏行报告、ICS 显示集合往返与 RRULE/折叠、粘贴文本含"仅教师/仅教室"、去重键与格式嗅探）**（见 7.2）；**空库首启、`Migration(1,2)` 仍无单测**，是已知缺口 |
 
 ### 4.5 本章可核对要点
 
@@ -748,11 +748,11 @@ ImportSource(适配器配置) 1 ── n ImportRecord(导入历史，含日志�
 | M2 | **取值断言测试（1 条）** | `GridGeometryTest.kt`：`实测当前算法在本作息下的取值` | 把 **2.0 / 80 dp / 12 sp** 三个数写死；将来改算法会在测试里失败，提醒同步文档 |
 | M2 | 用户反馈记录（三轮） | 原记录于 `第一版问题.md`（处理结果 / 作息细化 / 网格比例修正）：**所列问题已全部解决，文件经用户确认后删除**；结论已并入本文档 2.1、2.6 节 | 以文档结论 + 0.8.0 真机验收为准 |
 | M2 | 项目说明文档 | `README.md`（功能状态、安装步骤、构建方式、构建踩过的坑、项目结构、路线图） | 已创建；按版本节奏更新，不逐次改动 |
-| M4 | 导入编解码层（纯 Kotlin，不依赖 Android） | `app/src/main/java/com/classschedule/app/data/backup/`：`BackupModels.kt`、`MiniJson.kt`（零依赖 JSON 解析）、`BackupJson.kt`、`CsvCodec.kt`、`IcsCodec.kt`、`XlsxCodec.kt`（0.11.0 新增：JDK 自带 zip + DOM 解析 xlsx，零第三方依赖）、`PasteParser.kt`、`ImportPlanner.kt`、`FormatSniffer.kt`。~~`ExportFormat.kt`~~ 及各 codec 的 export 方向**已随导出功能移除（0.10.0）删除** | 与第十章 10.2 各格式约定逐条对照 |
+| M4 | 导入编解码层（纯 Kotlin，不依赖 Android） | `app/src/main/java/com/classschedule/app/data/backup/`：`BackupModels.kt`、`MiniJson.kt`（零依赖 JSON 解析）、`BackupJson.kt`、`CsvCodec.kt`、`IcsCodec.kt`、`XlsxCodec.kt`（0.11.0 新增：JDK 自带 zip + DOM 解析 xlsx，零第三方依赖）、`PasteParser.kt`、`FieldHeuristics.kt`（0.11.2 新增：教师/教室启发式，供 Xlsx 与粘贴解析共用）、`ImportPlanner.kt`、`FormatSniffer.kt`。~~`ExportFormat.kt`~~ 及各 codec 的 export 方向**已随导出功能移除（0.10.0）删除** | 与第十章 10.2 各格式约定逐条对照 |
 | M4 | 数据层导入 | `CourseStore.kt`（接口新增 4 个导入方法）、`CourseRepository.kt`（`withTransaction` 单事务）、`AppDatabase.kt`（批量插入/清空 DAO） | 覆盖导入为单事务，失败整体回滚 |
 | M4 | UI 与 SAF 接线 | `ui/ImportDialogs.kt`（粘贴/预览/JSON 确认三个弹窗）、`ui/WeekScreen.kt`（侧边栏 + SAF 选文件）、`ui/PeriodEditor.kt`（学期设置弹窗，两个嵌套入口已移出） | 全程走系统文件选择器**只读**，**未申请任何存储权限**（对照 AndroidManifest） |
 | M4 | 侧边栏导航（0.10.0） | `ui/WeekScreen.kt`：`ModalNavigationDrawer` + 顶栏 ☰ 图标；四项入口（学期设置 / 节次时间 / 从文件导入 / 粘贴文本导入）+ 学期周次头部 + 版本号底栏 | 见 10.7；顶栏「学期」文字按钮已移除 |
-| M4 | 单元测试 | `app/src/test/java/com/classschedule/app/data/backup/`：`BackupJsonTest.kt`（14 例）、`CsvCodecTest.kt`（17 例）、`IcsCodecTest.kt`（16 例）、`XlsxCodecTest.kt`（19 例：矩阵/列表布局、合并单元格、多 run 共享串、sheet 选取、时间行头、畸形 zip、**真实教务样本回归**）、`PasteParserTest.kt`（16 例）、`BackupPlannerTest.kt`（8 例）、`Fixtures.kt`（共享夹具 + `buildXlsx` 现场造包）；`ScheduleViewModelTest.kt`（29 例：导入策略、JSON 恢复与撤销、xlsx 字节入口、.xls 提示、空文件提示）。0.10.0 起改为**手工构造输入**（导出已移除，不再做往返测试） | 全量 **181 例全部通过**（上述 90 + 29 + M2 原有 62）；命令：`gradlew.bat testDebugUnitTest` |
+| M4 | 单元测试 | `app/src/test/java/com/classschedule/app/data/backup/`：`BackupJsonTest.kt`（17 例）、`CsvCodecTest.kt`（21 例：列宽松、节数缺省、关键列校验）、`IcsCodecTest.kt`（17 例）、`XlsxCodecTest.kt`（19 例：矩阵/列表布局、合并单元格、多 run 共享串、sheet 选取、时间行头、畸形 zip、**真实教务样本回归**）、`PasteParserTest.kt`（20 例：含"仅教师/仅教室/en dash"）、`BackupPlannerTest.kt`（8 例）、`Fixtures.kt`（共享夹具 + `buildXlsx` 现场造包）；`ScheduleViewModelTest.kt`（33 例：导入策略、JSON 恢复与撤销、节次断层保存、空周次报错、撤销作用域、xlsx 字节入口、.xls 提示、空文件提示）。0.10.0 起改为**手工构造输入**（导出已移除，不再做往返测试） | 全量 **197 例全部通过**（上述 102 + 33 + M2 原有 62）；命令：`gradlew.bat testDebugUnitTest` |
 | M4 | 待真机验收项 | 侧边栏四项入口可达性、SAF 选文件在系统选择器里的实际表现（MIME 已放开为 `*/*`）、导入撤销恢复、恢复后 App 正常打开、**教务系统实际导出的 .xlsx 矩阵课表导入**（R-16 迭代入口） | 按 10.6 出口条件逐条核对 |
 
 > 注：**界面截图仍未产出**，README 里也还没有配图。列入 M3 或 M6 补齐。

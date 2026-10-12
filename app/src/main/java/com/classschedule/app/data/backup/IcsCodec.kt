@@ -209,6 +209,31 @@ object IcsCodec {
         return out.map { it.trim() }.filter { it.isNotEmpty() }
     }
 
-    private fun unescapeText(s: String): String =
-        s.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
+    /**
+     * RFC 5545 §3.3.11 的 TEXT 转义还原（单遍扫描）。
+     *
+     * 用单遍而不是链式 replace：链式把 `\\n` 排在 `\\\\` 之前，会把
+     * "转义的反斜杠 + 字面 n"（`\\` + `n`）误转成换行；单遍从左到右配对，
+     * 反斜杠本身只被消费一次，不会二次解释。未知转义（如 `\x`）保留原样。
+     */
+    private fun unescapeText(s: String): String {
+        val sb = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (s[i + 1]) {
+                    'n', 'N' -> { sb.append('\n'); i += 2 }
+                    ',' -> { sb.append(','); i += 2 }
+                    ';' -> { sb.append(';'); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    else -> { sb.append(c); i++ }
+                }
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
+    }
 }

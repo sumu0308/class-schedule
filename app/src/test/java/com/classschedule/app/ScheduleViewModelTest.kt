@@ -259,6 +259,99 @@ class ScheduleViewModelTest {
         assertEquals("已添加「高等数学」（超出本学期的周次已裁剪到 20 周）", vm.message.value)
     }
 
+    @Test
+    fun `节次序号有断层_保存课程不挪位`() {
+        // 删掉中间一节后 index 出现断层：{1,2,4,5,6,7,8}，size=7 而最大序号=8。
+        // 旧实现按 size 收敛，一门在第 8 节的课"什么都不改点保存"会被挪到第 7 节。
+        val s = store()
+        s.setPeriods(
+            1,
+            listOf(1, 2, 4, 5, 6, 7, 8).map { idx ->
+                Period(id = idx.toLong(), termId = 1, index = idx, startTime = "08:00", endTime = "08:40")
+            },
+        )
+        val course = Course(
+            id = 10, termId = 1, name = "高等数学", dayOfWeek = 1,
+            startPeriodIndex = 8, periodCount = 1, weekRanges = "1-20",
+        )
+        s.setCourses(1, listOf(course))
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.startEdit(course)
+        vm.saveEdit() // 什么都不改，直接保存
+        advance()
+
+        val saved = s.savedCourses.single()
+        assertEquals(8, saved.startPeriodIndex)
+        assertEquals(1, saved.periodCount)
+    }
+
+    @Test
+    fun `周次全部超出本学期_报错且不落库`() {
+        val shortTerm = Term(id = 1, name = "短学期", startEpochDay = 20_454, totalWeeks = 4)
+        val s = FakeCourseStore().apply {
+            currentTerm.value = shortTerm
+            snapshot = shortTerm
+            terms += shortTerm
+            setPeriods(shortTerm.id, defaultPeriods(shortTerm.id))
+        }
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.startAdd(day = 1, periodIndex = 1)
+        vm.updateEdit { it.copy(name = "高等数学", weekExpr = "5-10") }
+        vm.saveEdit()
+        advance()
+
+        assertTrue(vm.edit.value.error!!.contains("超出本学期"))
+        assertTrue(s.savedCourses.isEmpty())
+    }
+
+    @Test
+    fun `保存新课程后_撤销不再指向之前的删除`() {
+        // 先删 A（产生撤销凭据），再保存 B：B 的提示条不该还能撤销早已完成的删除
+        val s = store()
+        val a = Course(
+            id = 10, termId = 1, name = "A", dayOfWeek = 1,
+            startPeriodIndex = 1, periodCount = 2, weekRanges = "1-20",
+        )
+        s.setCourses(1, listOf(a))
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.startEdit(a)
+        vm.deleteEditing()
+        advance()
+        assertTrue(vm.canUndo())
+
+        vm.startAdd(day = 2, periodIndex = 1)
+        vm.updateEdit { it.copy(name = "B") }
+        vm.saveEdit()
+        advance()
+        assertFalse(vm.canUndo()) // 保存类消息不提供撤销
+
+        vm.undoLast() // 无操作，不会把 A 复活
+        advance()
+        assertEquals(1, s.savedCourses.size) // 只有保存 B 那一次
+        assertEquals("B", s.savedCourses.single().name)
+    }
+
+    @Test
+    fun `课程级导入成功的提示条不再挂撤销`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.importPasteText("高等数学 - - 周一 1-2")
+        advance()
+        vm.confirmCourseImport()
+        advance()
+
+        assertEquals("已导入 1 门课程", vm.message.value)
+        assertFalse(vm.canUndo()) // 没有撤销凭据 → UI 不显示「撤销」
+    }
+
     // ── 3. 删除节次：级联清理、文案、撤销 ──────────────────
 
     @Test
@@ -575,7 +668,10 @@ class ScheduleViewModelTest {
         assertEquals(1, s.replacedData.size)
         // 当前学期换成备份里 isCurrent = true 的那个
         assertEquals(2L, vm.term.value?.id)
-        assertEquals("已恢复备份：2 个学期 / 16 个节次 / 2 门课程", vm.message.value)
+        assertEquals(
+            "已恢复备份：2 个学期 / 16 个节次 / 2 门课程（App 目前只显示当前学期，其余学期暂不可见）",
+            vm.message.value,
+        )
 
         // 消息栏点"撤销"：恢复导入前的快照
         vm.undoLast()

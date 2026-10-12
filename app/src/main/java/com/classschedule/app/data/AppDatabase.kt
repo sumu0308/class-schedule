@@ -117,7 +117,12 @@ interface CourseDao {
     @Query("SELECT * FROM course WHERE termId = :termId")
     suspend fun listByTerm(termId: Long): List<Course>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * 单条插入。用默认的 ABORT（与 [insertAll] 一致），刻意不用 REPLACE：
+     * REPLACE 的语义是"删旧行再插"，在有外键子表时可能连带级联删除；这里的 id
+     * 由自增分配，正常路径不会有主键冲突，真冲突就该显式失败而非默默删数据。
+     */
+    @Insert
     suspend fun insert(course: Course): Long
 
     /** 批量插入：文件导入一次写多行 */
@@ -158,7 +163,9 @@ interface SettingDao {
 @Database(
     entities = [Term::class, Period::class, Course::class, AppSetting::class],
     version = AppDatabase.VERSION,
-    exportSchema = false,
+    // 打开 schema 导出（见 build.gradle.kts 的 room.schemaLocation）：
+    // 有了历史 schema 才能用 MigrationTestHelper 校验迁移，也方便 review 结构变更。
+    exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {

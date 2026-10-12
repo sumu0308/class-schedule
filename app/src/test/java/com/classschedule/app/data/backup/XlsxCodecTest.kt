@@ -238,7 +238,8 @@ class XlsxCodecTest {
     }
 
     @Test
-    fun `列表布局_列数不足逐行报告`() {
+    fun `列表布局_少于10列但关键列齐全也导入`() {
+        // 7 列手工列表（缺单双周 / 颜色 / 备注）：旧实现因"列数不足 10"整份报废
         val bytes = Fixtures.buildXlsx(
             Fixtures.SheetSpec(
                 "名单",
@@ -250,9 +251,14 @@ class XlsxCodecTest {
         )
 
         val report = XlsxCodec.parse(bytes, term, periods)
-        assertEquals(0, report.courses.size)
-        assertEquals(1, report.issues.size)
-        assertTrue(report.issues[0].reason.contains("列数不足"))
+        assertEquals(0, report.issues.size)
+        val c = report.courses.single()
+        assertEquals("高等数学", c.name)
+        assertEquals("张老师", c.teacher)
+        assertEquals(1, c.dayOfWeek) // "周一" → 1
+        assertEquals(1, c.startPeriodIndex)
+        assertEquals(2, c.periodCount)
+        assertEquals("1-16", c.weekRanges)
     }
 
     // ── sheet 选取与底层 xml 路径 ───────────────────────────
