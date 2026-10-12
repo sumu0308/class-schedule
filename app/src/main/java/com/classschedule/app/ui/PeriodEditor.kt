@@ -34,12 +34,14 @@ import com.classschedule.app.util.GridClock
 import com.classschedule.app.util.TermCalendar
 
 /**
- * 学期设置弹窗。
+ * 学期设置弹窗（0.10.0 起只含学期档案三项）。
  *
  * 设计要点（响应用户第一条反馈）：
  *   - 开学日期用系统日历控件精确到年月日，不再只能按 7 天增减
  *   - 只允许选择周一：周次是按周计算的，若开学日不是周一，"第几周"会整体错位
- *   - 「节次时间」入口，可逐节改时间、增删节次
+ *
+ * 「节次时间」与「导入」入口 0.9.0 时曾嵌套在这里；0.10.0 按用户反馈
+ * 平铺到主页侧边栏（计划文档 10.7），本弹窗回归纯粹的档案编辑。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,7 +50,6 @@ fun TermEditorDialog(
     onUpdate: ((TermEditState) -> TermEditState) -> Unit,
     onDismiss: () -> Unit,
     onSave: () -> Unit,
-    onOpenPeriodEditor: () -> Unit,
 ) {
     if (!state.visible) return
     var weeksText by remember(state.visible, state.totalWeeks) {
@@ -131,23 +132,6 @@ fun TermEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-
-                // ── 节次时间入口 ──
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = "节次时间",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "每天几点上课、每节多长。课表表格的行高按这里的时长成比例显示。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = onOpenPeriodEditor) { Text("去设置节次时间") }
-                }
             }
         },
         confirmButton = { TextButton(onClick = onSave) { Text("保存") } },
@@ -281,7 +265,7 @@ fun PeriodEditorDialog(
     )
 }
 
-/** 时间输入框：接受 0800 / 08:00 / 8:00 三种写法，失焦时不校验格式，由外层提示 */
+/** 时间输入框：接受 0800 / 08:00 / 8:00 三种写法，统一补零成 HH:MM；失焦时不校验格式，由外层提示 */
 @Composable
 private fun TimeField(
     value: String,
@@ -295,7 +279,12 @@ private fun TimeField(
         onValueChange = { raw ->
             val digits = raw.filter { it.isDigit() }
             val normalized = when {
-                raw.contains(':') || raw.contains('：') -> raw.replace('：', ':').take(5)
+                raw.contains(':') || raw.contains('：') -> {
+                    val t = raw.replace('：', ':')
+                    val hour = t.substringBefore(':').padStart(2, '0').take(2)
+                    val minute = t.substringAfter(':').take(2)
+                    "$hour:$minute".take(5)
+                }
                 digits.length == 4 -> digits.substring(0, 2) + ":" + digits.substring(2)
                 digits.length == 3 -> "0" + digits.substring(0, 1) + ":" + digits.substring(1)
                 digits.length <= 2 -> digits

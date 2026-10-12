@@ -72,7 +72,8 @@ object TermCalendar {
     /** 是否周末（周六、周日） */
     fun isWeekend(dayOfWeek: Int): Boolean = dayOfWeek >= 6
 
-    private fun calendarOf(epochDay: Long): Calendar {
+    /** epochDay → 当地时区零点的 Calendar（同模块的编解码层也要用，故为 internal） */
+    internal fun calendarOf(epochDay: Long): Calendar {
         val cal = Calendar.getInstance()
         val localMidnightUtc = epochDay * 86_400_000L
         cal.timeInMillis = localMidnightUtc -

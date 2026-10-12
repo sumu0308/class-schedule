@@ -1,42 +1,50 @@
 package com.classschedule.app.data
 
+import androidx.room.withTransaction
+import com.classschedule.app.data.backup.BackupData
+import com.classschedule.app.data.backup.ImportCounts
+import com.classschedule.app.data.backup.ImportPlanner
+import com.classschedule.app.data.backup.ImportStrategy
+import com.classschedule.app.data.backup.ParsedCourse
 import com.classschedule.app.util.GridClock
 import com.classschedule.app.util.TermCalendar
 import kotlinx.coroutines.flow.Flow
 
 /**
- * 数据访问的唯一入口。ViewModel 只依赖它，不直接碰 DAO，
- * 好处是以后加"导入批次回滚"之类的逻辑时，改动集中在一个文件。
+ * 数据访问的唯一入口。ViewModel 只依赖 [CourseStore]（不直接碰 DAO），
+ * 好处是以后加"导入批次回滚"之类的逻辑时，改动集中在一个文件；
+ * 同时单测里可以整个换成内存假实现，不启动 Room。
  */
-class CourseRepository(private val db: AppDatabase) {
+class CourseRepository(private val db: AppDatabase) : CourseStore {
 
     private val termDao = db.termDao()
     private val periodDao = db.periodDao()
     private val courseDao = db.courseDao()
     private val settingDao = db.settingDao()
 
-    val currentTerm: Flow<Term?> = termDao.observeCurrent()
+    override val currentTerm: Flow<Term?> = termDao.observeCurrent()
 
-    fun coursesOf(termId: Long): Flow<List<Course>> = courseDao.observeByTerm(termId)
+    override fun coursesOf(termId: Long): Flow<List<Course>> = courseDao.observeByTerm(termId)
 
-    fun periodsOf(termId: Long): Flow<List<Period>> = periodDao.observeByTerm(termId)
+    override fun periodsOf(termId: Long): Flow<List<Period>> = periodDao.observeByTerm(termId)
 
     suspend fun termCount(): Int = termDao.count()
 
     /** 直接读一次当前学期快照，供界面首帧使用 */
-    suspend fun currentTermSnapshot(): Term? = termDao.current()
+    override suspend fun currentTermSnapshot(): Term? = termDao.current()
 
     /**
      * 首次启动时准备一个可用的学期与节次模板。
      * 默认 8 小节（一天 4 个大节 × 2 小节，每小节 40 分钟），开学日取"本周周一"。
      */
-    suspend fun ensureSeedData(): Long {
+    override suspend fun ensureSeedData(): Long {
         termDao.current()?.let { return it.id }
 
         val today = TermCalendar.todayEpochDay()
         val thisMonday = today - (TermCalendar.dayOfWeek(today) - 1)
 
-        val termId = termDao.insert(
+        // insertAsCurrent：清旧标志 + 插入在同一事务，保证至多一个当前学期
+        val termId = termDao.insertAsCurrent(
             Term(
                 name = "本学期",
                 startEpochDay = thisMonday,
@@ -113,6 +121,25 @@ class CourseRepository(private val db: AppDatabase) {
     companion object {
         const val DEFAULT_PERIODS_PER_BLOCK = 2
 
+        /**
+         * 新增一节的默认时间推算：接在最后一节之后，默认时长一小时。
+         *
+         * 起始时间收敛到 22:00 之前：再往晚会跨过午夜，formatMinutes 取模后
+         * 会"绕回凌晨"，存进去的时间看起来结束早于开始，反而过不了校验。
+         */
+        fun nextPeriod(termId: Long, existing: List<Period>): Period {
+            val last = existing.maxByOrNull { it.index }
+            val rawStart = last?.let { GridClock.minutesOf(it.endTime) + 20 } ?: (8 * 60)
+            val startMinutes = rawStart.coerceIn(0, 22 * 60)
+            val endMinutes = startMinutes + 60
+            return Period(
+                termId = termId,
+                index = (last?.index ?: 0) + 1,
+                startTime = GridClock.formatMinutes(startMinutes),
+                endTime = GridClock.formatMinutes(endMinutes),
+            )
+        }
+
         fun groupIntoBlocks(
             periods: List<Period>,
             periodsPerBlock: Int = DEFAULT_PERIODS_PER_BLOCK,
@@ -124,34 +151,35 @@ class CourseRepository(private val db: AppDatabase) {
         }
     }
 
-    /** 新增一节：接在最后一节之后，默认一小时 */
-    fun nextPeriod(termId: Long, existing: List<Period>): Period {
-        val last = existing.maxByOrNull { it.index }
-        val startMinutes = last?.let { GridClock.minutesOf(it.endTime) + 20 } ?: (8 * 60)
-        val endMinutes = startMinutes + 60
-        return Period(
-            termId = termId,
-            index = (last?.index ?: 0) + 1,
-            startTime = GridClock.formatMinutes(startMinutes),
-            endTime = GridClock.formatMinutes(endMinutes),
-        )
-    }
+    /**
+     * 新增一节：接在现有节次之后，默认时长一小时。
+     * 纯逻辑在伴随对象里，ViewModel 与测试假实现共用同一份。
+     */
+    override fun nextPeriod(termId: Long, existing: List<Period>): Period =
+        // 显式限定到伴生对象：同名实例成员不写类名会无限递归
+        CourseRepository.nextPeriod(termId, existing)
 
-    suspend fun insertPeriod(period: Period) = periodDao.insertAll(listOf(period))
+    override suspend fun insertPeriod(period: Period) = periodDao.insertAll(listOf(period))
 
-    suspend fun deletePeriod(period: Period) = periodDao.delete(period)
+    override suspend fun deletePeriod(period: Period) = periodDao.delete(period)
 
-    suspend fun saveCourse(course: Course): Long =
+    override suspend fun saveCourse(course: Course): Long =
         if (course.id == 0L) courseDao.insert(course) else {
             courseDao.update(course)
             course.id
         }
 
-    suspend fun deleteCourse(course: Course) = courseDao.delete(course)
+    override suspend fun deleteCourse(course: Course) = courseDao.delete(course)
 
-    suspend fun updateTerm(term: Term) = termDao.update(term)
+    /**
+     * 更新学期档案（名称 / 开学日 / 总周数）。
+     * 走列级 UPDATE 而非整行 @Update：isCurrent 不在可改范围内，
+     * 杜绝调用方在 copy() 时误碰当前学期标志。
+     */
+    override suspend fun updateTerm(term: Term) =
+        termDao.updateProfile(term.id, term.name, term.startEpochDay, term.totalWeeks)
 
-    suspend fun updatePeriod(period: Period) = periodDao.update(period)
+    override suspend fun updatePeriod(period: Period) = periodDao.update(period)
 
     /**
      * 一次性修正旧版本留下的默认节次。
@@ -166,7 +194,7 @@ class CourseRepository(private val db: AppDatabase) {
      *
      * @return 是否做了替换
      */
-    suspend fun migrateLegacyDefaultPeriods(termId: Long): Boolean {
+    override suspend fun migrateLegacyDefaultPeriods(termId: Long): Boolean {
         if (settingDao.get(AppDatabase.KEY_DEFAULT_PERIODS_MIGRATED) == "true") return false
 
         val current = periodDao.listByTerm(termId)
@@ -186,5 +214,48 @@ class CourseRepository(private val db: AppDatabase) {
         return isLegacyDefault
     }
 
-    suspend fun listCourses(termId: Long): List<Course> = courseDao.listByTerm(termId)
+    override suspend fun listCourses(termId: Long): List<Course> = courseDao.listByTerm(termId)
+
+    // ── 导入（M4，计划文档第十章；导出已按用户决策移除） ──────
+
+    override suspend fun importCourses(
+        termId: Long,
+        courses: List<ParsedCourse>,
+        strategy: ImportStrategy,
+    ): ImportCounts = when (strategy) {
+        ImportStrategy.APPEND -> {
+            courseDao.insertAll(courses.map { it.toCourse(termId) })
+            ImportCounts(courses.size, 0)
+        }
+
+        // 单事务：先删后插。中途失败整体回滚，不会留下"删了旧的、新的没进来"的空档
+        ImportStrategy.REPLACE_TERM -> db.withTransaction {
+            courseDao.clearByTerm(termId)
+            courseDao.insertAll(courses.map { it.toCourse(termId) })
+            ImportCounts(courses.size, 0)
+        }
+
+        ImportStrategy.MERGE -> {
+            val plan = ImportPlanner.plan(courseDao.listByTerm(termId), courses, ImportStrategy.MERGE)
+            courseDao.insertAll(plan.toInsert.map { it.toCourse(termId) })
+            ImportCounts(plan.toInsert.size, plan.skipped)
+        }
+    }
+
+    override suspend fun replaceAllData(data: BackupData) = db.withTransaction {
+        // 删除顺序遵守外键方向：先子表后父表，避免 FK 约束报错
+        courseDao.clearAll()
+        periodDao.clearAll()
+        termDao.clearAll()
+        // 保留文件里的 id：period/course 靠 termId 引用，重新分配会断链
+        termDao.insertAll(data.terms)
+        periodDao.insertAll(data.periods)
+        courseDao.insertAll(data.courses)
+    }
+
+    override suspend fun snapshotAll(): BackupData = BackupData(
+        terms = termDao.all(),
+        periods = periodDao.all(),
+        courses = courseDao.all(),
+    )
 }

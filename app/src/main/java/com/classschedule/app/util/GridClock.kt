@@ -33,11 +33,27 @@ object GridClock {
         return "%d:%02d".format(t / 60, t % 60)
     }
 
-    /** 解析失败或时间倒置时返回 false，用于输入校验 */
+    /** 严格匹配 "HH:MM"：小时 00-23、分钟 00-59，两位补零 */
+    private val STRICT_TIME = Regex("^([01]\\d|2[0-3]):([0-5]\\d)$")
+
+    /**
+     * 严格解析 "HH:MM" → 当天第几分钟；格式不合法返回 null。
+     *
+     * 与 [minutesOf] 的宽容解析分工明确：minutesOf 负责把"已经存进去的数据"
+     * 算成分钟数，容错是美德；parseStrict 负责判断"要不要把用户输入存进去"，
+     * 严格是美德。没有这一层，"08:70" 会被 minutesOf 容错成 08:59 之后
+     * 骗过旧版 isRange 检查，脏时间直接入库。
+     */
+    fun parseStrict(time: String): Int? {
+        val m = STRICT_TIME.matchEntire(time.trim()) ?: return null
+        return m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt()
+    }
+
+    /** 解析失败、格式非法或时间倒置时返回 false，用于输入校验 */
     fun isValidRange(start: String, end: String): Boolean {
-        val s = minutesOf(start)
-        val e = minutesOf(end)
-        return e > s && start.contains(':') && end.contains(':')
+        val s = parseStrict(start) ?: return false
+        val e = parseStrict(end) ?: return false
+        return e > s
     }
 
     /** 时长文本，如 100 分钟 → "1 小时 40 分" */

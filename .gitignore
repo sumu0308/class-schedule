@@ -34,3 +34,6 @@ keystore.properties
 .gradle-home/_innerjar/
 .gradle-home/_wrappermerge/
 *.tmp
+
+# ── Agent 工作区（内部记忆/日志，不进仓库） ─────────────
+.workbuddy/

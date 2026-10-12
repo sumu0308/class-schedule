@@ -20,7 +20,16 @@ enum class WeekParity {
     EVEN,
 }
 
-/** 学期。startEpochDay 为第 1 周周一，用于推算"今天是第几周"。 */
+/**
+ * 学期。startEpochDay 为第 1 周周一，用于推算"今天是第几周"。
+ *
+ * isCurrent 的约束：**任意时刻至多一条 isCurrent = 1**。
+ * 该不变量由 TermDao.insertAsCurrent（先清标志再插入、同一事务）保证；
+ * 档案字段的修改走 TermDao.updateProfile，刻意不碰 isCurrent，
+ * 防止"改个学期名把当前学期改没了"这类误操作开出第二个当前学期。
+ * 读取侧（observeCurrent / current）按开学日倒序取第一条，
+ * 即使历史数据里残留了多条 isCurrent，行为至少是确定的。
+ */
 @Entity(tableName = "term")
 data class Term(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

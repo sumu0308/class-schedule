@@ -17,8 +17,8 @@ android {
         applicationId = "com.classschedule.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.8.0"
+        versionCode = 12
+        versionName = "0.11.1"
     }
 
     // 正式签名（M6 阶段接入）：届时由 tools/create-keystore.mjs 生成密钥并写入
@@ -85,4 +85,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.kotlinx.coroutines.test)
 }
