@@ -100,7 +100,7 @@
 
 ## 装到手机上（普通用户）
 
-1. 拿到 `app-release.apk`（自己构建见下文）
+1. 拿到 `class-schedule-<版本号>-release.apk`（自己构建见下文）
 2. 把 APK 传到手机。**推荐**：电脑与手机连同一个网络，双击 `serve-apk.bat`，用手机浏览器打开它打印出的地址即可下载
 3. 手机点安装，提示"未知来源应用"时允许一次
 4. 首次打开后建议点左上角 **☰** → **学期设置**，把**开学日期**改成你学校校历上第 1 周的周一
@@ -133,7 +133,7 @@ node tools\setup-gradle-wrapper.mjs
 build.bat
 ```
 
-产物在 `app\build\outputs\apk\release\app-release.apk`。
+产物在 `app\build\outputs\apk\release\class-schedule-<版本号>-release.apk`，文件名自带版本号，多版本并存时不会认错。
 
 ### 常用命令
 

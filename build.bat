@@ -65,10 +65,13 @@ if "%RESULT%"=="0" (
   echo ============================================================
   echo   打包成功
   echo ============================================================
-  for %%f in ("app\build\outputs\apk\release\app-release.apk") do (
+  rem The APK name carries the version number (set by outputFileName in
+  rem app\build.gradle.kts), so match it by wildcard instead of hardcoding
+  rem a name that would break on every release.
+  for %%f in ("app\build\outputs\apk\release\class-schedule-*-release.apk") do (
     if exist "%%f" echo   APK: %%~ff  (%%~zf 字节)
   )
-  for %%f in ("app\build\outputs\apk\debug\app-debug.apk") do (
+  for %%f in ("app\build\outputs\apk\debug\class-schedule-*-debug.apk") do (
     if exist "%%f" echo   APK: %%~ff  (%%~zf 字节)
   )
   echo.
