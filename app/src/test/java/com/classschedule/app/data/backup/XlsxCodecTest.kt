@@ -345,7 +345,7 @@ class XlsxCodecTest {
                 listOf(
                     listOf(""),
                     listOf("2026-2027-1学期教学安排"),
-                    listOf("学院：计算机学院/软件学院  班级：计算机科学与技术 B240403  人数：30"),
+                    listOf("学院：信息工程学院  班级：软件工程 B240101  人数：30"),
                     listOf(
                         "节次", "", "星期一", "", "", "星期二", "", "", "星期三", "", "",
                         "星期四", "", "", "星期五", "", "", "星期六", "", "", "", "星期日",
@@ -354,15 +354,15 @@ class XlsxCodecTest {
                         "1-2节08:00:00-09:40:00", "", "", "", "",
                         "单片机原理与应用_x000D_\n1-14周_x000D_\nXC205_x000D_\n赵小峰,钱思琪",
                         "", "",
-                        "计算机网络_x000D_\n1-14周_x000D_\nXC507_x000D_\n李莹莹",
+                        "计算机网络_x000D_\n1-14周_x000D_\nXC507_x000D_\n孙悦",
                     ),
                     listOf(
                         "3-4节10:00:00-11:40:00", "",
-                        "形势与政策_x000D_\n1,3,5,7周_x000D_\nXD1_x000D_\n常振楠",
+                        "形势与政策_x000D_\n1,3,5,7周_x000D_\nXD1_x000D_\n周文彬",
                     ),
                     listOf(
                         "5-6节14:30:00-16:10:00", "", "", "", "",
-                        "习近平新时代中国特色社会主义思想概论_x000D_\n1-16周_x000D_\nXA3_x000D_\n曾洁",
+                        "习近平新时代中国特色社会主义思想概论_x000D_\n1-16周_x000D_\nXA3_x000D_\n吴丽",
                     ),
                 ),
             ),
@@ -389,7 +389,7 @@ class XlsxCodecTest {
         assertEquals(3, xingshi.startPeriodIndex)
         assertEquals("1,3,5,7", xingshi.weekRanges) // 显式周次列表
         assertEquals("XD1", xingshi.room) // 教室代码：字母 + 1 位数字
-        assertEquals("常振楠", xingshi.teacher)
+        assertEquals("周文彬", xingshi.teacher)
         assertNull(xingshi.note)
     }
 

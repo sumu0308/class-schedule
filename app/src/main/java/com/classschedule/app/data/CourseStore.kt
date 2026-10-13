@@ -51,6 +51,17 @@ interface CourseStore {
     /** 新增一节：接在现有节次之后，默认一小时 */
     fun nextPeriod(termId: Long, existing: List<Period>): Period
 
+    // ── 外观配置（v0.12.0） ──────────────────────────────
+
+    /**
+     * 读取外观配置。库里没有记录时返回 [Appearance.DEFAULT]（跟随系统 + 默认蓝）。
+     * 宽容解码在 [AppearanceCodec] 内做，脏值不会冒泡成异常。
+     */
+    suspend fun loadAppearance(): Appearance
+
+    /** 写入外观配置。整体覆盖 `app_setting` 里的单个键，不留中间态。 */
+    suspend fun saveAppearance(appearance: Appearance)
+
     // ── 导入（M4，计划文档第十章；导出已按用户决策移除） ──────
 
     /**

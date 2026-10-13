@@ -183,6 +183,9 @@ abstract class AppDatabase : RoomDatabase() {
         /** 键值表的键名集中放这里，避免各处的字符串写错 */
         const val KEY_DEFAULT_PERIODS_MIGRATED = "default_periods_migrated_to_v2"
 
+        /** 外观配置（主题模式 + 主色），值是 [AppearanceCodec] 编码的字符串 */
+        const val KEY_APPEARANCE = "appearance"
+
         /**
          * 迁移列表。刻意不使用 fallbackToDestructiveMigration：
          * 用户的课表是手工录进去的，升级时清库不可接受。

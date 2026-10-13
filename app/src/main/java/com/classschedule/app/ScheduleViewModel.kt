@@ -1,16 +1,23 @@
 package com.classschedule.app
 
 import android.app.Application
+import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import com.classschedule.app.data.AppDatabase
+import com.classschedule.app.data.Appearance
+import com.classschedule.app.data.BackgroundImagePort
+import com.classschedule.app.data.BackgroundImageStore
 import com.classschedule.app.data.Course
 import com.classschedule.app.data.CourseRepository
 import com.classschedule.app.data.CourseStore
 import com.classschedule.app.data.Period
 import com.classschedule.app.data.Term
+import com.classschedule.app.data.ThemeMode
+import com.classschedule.app.data.label
 import com.classschedule.app.data.WeekParity
 import com.classschedule.app.data.backup.BackupData
 import com.classschedule.app.data.backup.BackupJson
@@ -104,6 +111,11 @@ class ScheduleViewModel(
      * 单测里换成测试调度器，避免 withContext 的真实线程切换把断言变成 race。
      */
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * 背景图文件读写（v0.12.0）。生产环境传真实实现，单测传 null 或内存假实现——
+     * 它要 Context 与真实文件系统，不适合在纯 JVM 单测里直接构造。
+     */
+    private val backgroundStore: BackgroundImagePort? = null,
 ) : ViewModel() {
 
     private val _term = MutableStateFlow<Term?>(null)
@@ -140,6 +152,20 @@ class ScheduleViewModel(
     val message: StateFlow<String?> = _message.asStateFlow()
 
     /**
+     * 外观配置（v0.12.0）。
+     *
+     * 初值是 [Appearance.DEFAULT] 而不是等数据库读完再给值：
+     * 冷启动时若把主题色板留空，MaterialTheme 会拿到默认色板再跳一次，
+     * 视觉上是"闪一下再变"。先用默认配置立刻出界面，读完再切到用户配置，
+     * 用户配置与默认相同时就没有任何跳变。
+     */
+    private val _appearance = MutableStateFlow(Appearance.DEFAULT)
+    val appearance: StateFlow<Appearance> = _appearance.asStateFlow()
+
+    /** 改外观前的快照，供提示条的「撤销」使用 */
+    private var appearanceUndo: Appearance? = null
+
+    /**
      * 待撤销的动作。与提示条一一对应：每条提示推入时都会重置它，
      * UI 只有在它非 [None] 时才给提示条挂「撤销」按钮，消费后即失配——
      * 杜绝"保存 B 的提示条撤销了早已删掉的 A"这类作用域错乱。
@@ -148,6 +174,8 @@ class ScheduleViewModel(
         data object None : PendingUndo
         data class DeleteCourse(val course: Course) : PendingUndo
         data class RestoreBackup(val data: BackupData) : PendingUndo
+        /** 恢复改动前的外观配置（主题模式 + 主色） */
+        data class RestoreAppearance(val before: Appearance) : PendingUndo
     }
 
     private var pendingUndo: PendingUndo = PendingUndo.None
@@ -165,6 +193,14 @@ class ScheduleViewModel(
     private var pendingJsonText: String? = null
 
     init {
+        viewModelScope.launch {
+            // 外观配置（v0.12.0）单独读一次：它与学期数据无关，
+            // 不必等 ensureSeedData 跑完才生效
+            val saved = runCatching { withContext(ioDispatcher) { store.loadAppearance() } }
+                .getOrDefault(Appearance.DEFAULT)
+            _appearance.value = saved
+        }
+
         viewModelScope.launch {
             // 首次启动准备默认学期与节次；已有数据则原样返回
             val termId = withContext(ioDispatcher) { store.ensureSeedData() }
@@ -374,6 +410,153 @@ class ScheduleViewModel(
     /** UI 层（SAF 读写失败等）复用消息栏推送提示 */
     fun showMessage(text: String) {
         pushMessage(text)
+    }
+
+    // ── 外观设置（v0.12.0） ──────────────────────────────
+
+    /**
+     * 切换主题模式。
+     *
+     * 记录撤销快照的时机是**第一次**改动，而不是每次都记：
+     * 用户在设置页连点三下模式，提示条只该撤销这三下作为一个整体，
+     * 回到进来之前的样子。
+     */
+    fun setThemeMode(mode: ThemeMode) = updateAppearance(
+        new = { it.copy(themeMode = mode) },
+        message = "已切换到${mode.label()}",
+    )
+
+    /** 选主色；传 null 表示恢复内置默认蓝 */
+    fun setPrimaryColor(argb: Long?) = updateAppearance(
+        new = { it.copy(primaryArgb = argb) },
+        message = if (argb == null) "已恢复默认主色" else "已更换主色",
+    )
+
+    /** 恢复默认外观（跟随系统 + 默认蓝 + 无背景图），可撤销 */
+    fun resetAppearance() {
+        // 恢复默认意味着连背景图一起清掉：配置里不留残余路径，
+        // 文件删掉后即使配置被撤销回来，路径也指向不存在的文件而回落到纯色
+        val oldBackground = _appearance.value.backgroundPath
+        updateAppearance(
+            new = { Appearance.DEFAULT },
+            message = "已恢复默认外观",
+        )
+        if (oldBackground != null) {
+            viewModelScope.launch {
+                withContext(ioDispatcher) { backgroundStore?.delete(oldBackground) }
+            }
+        }
+    }
+
+    private fun updateAppearance(new: (Appearance) -> Appearance, message: String) {
+        val before = _appearance.value
+        val after = new(before)
+        if (after == before) return
+
+        // 只有从"没动过"到"动过"的第一次才记快照
+        if (appearanceUndo == null) appearanceUndo = before
+
+        // 先改内存：重组立刻发生，用户在设置页就能看到即时效果
+        _appearance.value = after
+        viewModelScope.launch {
+            // 落库失败只在消息栏提一句，不回滚内存里的值：
+            // 回滚会让界面"闪回旧配色"，比没存上更让人困惑
+            val failure = runCatching { withContext(ioDispatcher) { store.saveAppearance(after) } }
+                .exceptionOrNull()
+            pushMessage(
+                if (failure == null) message else "$message（未保存，重启后会失效）",
+                PendingUndo.RestoreAppearance(appearanceUndo ?: before),
+            )
+        }
+    }
+
+    /** 外观撤销：由 [PendingUndo.RestoreAppearance] 分派进来 */
+    private fun undoAppearance(before: Appearance) {
+        appearanceUndo = null
+        _appearance.value = before
+        viewModelScope.launch {
+            withContext(ioDispatcher) { store.saveAppearance(before) }
+            pushMessage("已恢复之前的外观")
+        }
+    }
+
+    /** 调整背景蒙版浓度（0..1）；只影响背景图，不参与撤销（滑动是连续微调，逐格撤销没有意义） */
+    fun setBackgroundDim(dim: Float) {
+        val clamped = dim.coerceIn(0f, 1f)
+        if (_appearance.value.backgroundDim == clamped) return
+        _appearance.value = _appearance.value.copy(backgroundDim = clamped)
+        viewModelScope.launch {
+            runCatching { withContext(ioDispatcher) { store.saveAppearance(_appearance.value) } }
+        }
+    }
+
+    /**
+     * 导入自定义背景图（v0.12.0）。
+     *
+     * 文件读写放在 [backgroundStore]（可注入，便于单测替换），
+     * ViewModel 只负责编排"落盘 → 写配置 → 推提示"这条顺序。
+     *
+     * 参数可空：[uri] 只被透传给存储层，ViewModel 自己从不读它的内容。
+     * 声明可空是为了让纯 JVM 单测能驱动这段编排（android.jar 是桩实现，
+     * 造不出真实 Uri）；真实存储层收到 null 会返回失败而不是崩。
+     *
+     * 注意：**只有落盘成功才改配置**。失败时配置里仍指向旧图，
+     * 用户看到的还是原来那张，不会出现"配置说有图、实际空白"的错位。
+     */
+    fun importBackground(uri: Uri?) {
+        val store = backgroundStore
+        if (store == null) {
+            pushMessage("无法导入背景图：初始化未完成")
+            return
+        }
+        val previous = _appearance.value.backgroundPath
+        viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                store.import(uri, previous)
+            }
+            when (result) {
+                is BackgroundImageStore.ImportResult.Success -> {
+                    updateAppearance(
+                        new = { it.copy(backgroundPath = result.fileName) },
+                        message = "已更换背景图",
+                    )
+                }
+                is BackgroundImageStore.ImportResult.Failure -> {
+                    // 失败不记撤销：配置根本没变
+                    pushMessage(result.reason)
+                }
+            }
+        }
+    }
+
+    /** 去掉背景图，回到纯色（同时删除文件） */
+    fun clearBackground() {
+        val store = backgroundStore
+        if (store == null) {
+            // 存储层不可用是更根本的问题，先报它；
+            // 否则"本来就没有背景图"会把这条错误盖掉，排查时会误以为是死代码
+            pushMessage("无法清除背景图：初始化未完成")
+            return
+        }
+        val current = _appearance.value.backgroundPath ?: return
+        // 先清配置再删文件：顺序反了的话，中途失败会留下"配置指向已删文件"的空引用
+        updateAppearance(
+            new = { it.copy(backgroundPath = null) },
+            message = "已恢复纯色背景",
+        )
+        viewModelScope.launch {
+            withContext(ioDispatcher) { store.delete(current) }
+        }
+    }
+
+    /**
+     * 读取背景位图供界面绘制。
+     *
+     * 与 [appearance] 分开返回：位图是不可变的绘制资源，而配置是会被反复修改的
+     * 状态，两者混在一个 StateFlow 里会让每次改主题都重新解码一遍图片。
+     */
+    suspend fun loadBackground(): ImageBitmap? = withContext(ioDispatcher) {
+        backgroundStore?.load(_appearance.value.backgroundPath)
     }
 
     // ── 学期设置 ────────────────────────────────────────────────
@@ -675,6 +858,7 @@ class ScheduleViewModel(
      * 统一的撤销入口（提示条的"撤销"按钮）。按当前待撤销动作分派：
      *   - RestoreBackup：恢复导入前的整库快照；
      *   - DeleteCourse：恢复刚删掉的那门课；
+     *   - RestoreAppearance：恢复改动前的外观；
      *   - None：无操作（UI 也不会显示按钮）。
      * 凭据随消息一起被消费，所以"撤销"永远只作用于它那条提示对应的那次操作。
      */
@@ -687,6 +871,10 @@ class ScheduleViewModel(
                     pushMessage("已恢复到导入前的数据")
                 }
             }
+            is PendingUndo.RestoreAppearance -> {
+                pendingUndo = PendingUndo.None
+                undoAppearance(pending.before)
+            }
             is PendingUndo.DeleteCourse -> undoDelete()
             PendingUndo.None -> Unit
         }
@@ -696,7 +884,11 @@ class ScheduleViewModel(
         fun factory(app: Application): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return ScheduleViewModel(CourseRepository(AppDatabaseProvider.get(app))) as T
+                return ScheduleViewModel(
+                    store = CourseRepository(AppDatabaseProvider.get(app)),
+                    // 背景图存 applicationContext：配置变化（旋转、深浅切换）不会丢
+                    backgroundStore = BackgroundImageStore.of(app),
+                ) as T
             }
         }
     }

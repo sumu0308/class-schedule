@@ -8,7 +8,7 @@ setlocal
 cd /d "%~dp0"
 
 @rem JDK: uses the system one by default; edit this line if yours is elsewhere
-if not defined JAVA_HOME set "JAVA_HOME=D:\JDK\jdk21"
+if not defined JAVA_HOME set "JAVA_HOME=C:\Path\To\Your\JDK-21"
 
 @rem Keep the Gradle cache inside the project (no C: usage, easy to move)
 set "GRADLE_USER_HOME=%~dp0.gradle-home"

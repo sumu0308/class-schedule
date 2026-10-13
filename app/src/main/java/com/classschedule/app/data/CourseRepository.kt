@@ -159,6 +159,22 @@ class CourseRepository(private val db: AppDatabase) : CourseStore {
         // 显式限定到伴生对象：同名实例成员不写类名会无限递归
         CourseRepository.nextPeriod(termId, existing)
 
+    // ── 外观配置（v0.12.0） ──────────────────────────────
+
+    /**
+     * 外观配置不进 JSON 备份：主色与主题模式属于"这台设备上我的偏好"，
+     * 跟着课表数据一起搬到别的设备没有意义（换设备时用户会重新挑）。
+     * 与 KEY_DEFAULT_PERIODS_MIGRATED 同一处置理由，都留在 `app_setting` 里。
+     */
+    override suspend fun loadAppearance(): Appearance =
+        AppearanceCodec.decode(settingDao.get(AppDatabase.KEY_APPEARANCE))
+
+    override suspend fun saveAppearance(appearance: Appearance) {
+        settingDao.put(
+            AppSetting(AppDatabase.KEY_APPEARANCE, AppearanceCodec.encode(appearance)),
+        )
+    }
+
     override suspend fun insertPeriod(period: Period) = periodDao.insertAll(listOf(period))
 
     override suspend fun deletePeriod(period: Period) = periodDao.delete(period)

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -71,6 +72,9 @@ import kotlinx.coroutines.withContext
 private enum class SidebarItem(val label: String, val icon: ImageVector) {
     TERM("学期设置", Icons.Filled.DateRange),
     PERIODS("节次时间", Icons.AutoMirrored.Filled.List),
+    // 用齿轮图标：项目只依赖 material-icons-core（不含 Palette / Brightness4 等
+    // 调色类图标，那些在 material-icons-extended 里），Settings 是 core 里语义最贴的一个
+    APPEARANCE("外观", Icons.Filled.Settings),
     IMPORT_FILE("从文件导入", Icons.Filled.Add),
     IMPORT_PASTE("粘贴文本导入", Icons.Filled.Edit),
 }
@@ -106,12 +110,22 @@ fun WeekScreen(vm: ScheduleViewModel) {
     val message by vm.message.collectAsStateWithLifecycle()
     val courseImport by vm.courseImport.collectAsStateWithLifecycle()
     val jsonImport by vm.jsonImport.collectAsStateWithLifecycle()
+    val appearance by vm.appearance.collectAsStateWithLifecycle()
+
+    // 背景位图单独加载并缓存：appearance 会被频繁修改（拖蒙版滑块、换主题），
+    // 若把位图放进同一个 state，每次微调都要重新解码一张图。
+    val backgroundPath = appearance.backgroundPath
+    var background by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(backgroundPath) {
+        background = if (backgroundPath == null) null else vm.loadBackground()
+    }
 
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var pasteVisible by remember { mutableStateOf(false) }
+    var appearanceVisible by remember { mutableStateOf(false) }
 
     LaunchedEffect(message) {
         val m = message ?: return@LaunchedEffect
@@ -141,6 +155,14 @@ fun WeekScreen(vm: ScheduleViewModel) {
         }
     }
 
+    // ── SAF：选背景图（只读一次，立刻拷进应用私有目录；不申请存储权限） ──
+    val backgroundLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        vm.importBackground(uri)
+    }
+
     val t = term
     val dayCount = 7
     val totalWeeks = t?.totalWeeks?.coerceAtLeast(1) ?: 20
@@ -164,6 +186,7 @@ fun WeekScreen(vm: ScheduleViewModel) {
                         when (item) {
                             SidebarItem.TERM -> vm.openTermEdit()
                             SidebarItem.PERIODS -> vm.openPeriodEditor()
+                            SidebarItem.APPEARANCE -> appearanceVisible = true
                             SidebarItem.IMPORT_FILE -> importLauncher.launch(IMPORT_MIMES)
                             SidebarItem.IMPORT_PASTE -> pasteVisible = true
                         }
@@ -318,6 +341,8 @@ fun WeekScreen(vm: ScheduleViewModel) {
                         periods = periods,
                         isDark = MaterialTheme.colorScheme.background.luminanceOf() < 0.5f,
                         term = t,
+                        appearance = appearance,
+                        background = background,
                         onCourseTap = { course -> vm.startEdit(course) },
                         onEmptyLongPress = { day, period -> vm.startAdd(day, period) },
                     )
@@ -359,6 +384,18 @@ fun WeekScreen(vm: ScheduleViewModel) {
             pasteVisible = false
             vm.importPasteText(text)
         },
+    )
+
+    AppearanceDialog(
+        visible = appearanceVisible,
+        appearance = appearance,
+        onThemeModeChange = { vm.setThemeMode(it) },
+        onPrimaryChange = { vm.setPrimaryColor(it) },
+        onPickBackground = { backgroundLauncher.launch("image/*") },
+        onClearBackground = { vm.clearBackground() },
+        onDimChange = { vm.setBackgroundDim(it) },
+        onReset = { vm.resetAppearance() },
+        onDismiss = { appearanceVisible = false },
     )
 
     CourseImportDialog(
@@ -481,9 +518,16 @@ private fun weekRangeText(term: Term?, week: Int): String {
     return "${TermCalendar.formatShort(monday)} - ${TermCalendar.formatShort(monday + 6)}"
 }
 
-/** 判断当前是不是深色配色 */
+/**
+ * 判断当前是不是浅色底（v0.12.0 起与文字色选取共用 WCAG 相对亮度）。
+ *
+ * 原先是手写的 `0.299R+0.587G+0.114B`，那是"人眼感知亮度"的加权；
+ * 而 [ThemeColors.readableOn] 选黑/白字用的是 WCAG 相对亮度公式。
+ * 两套口径并存时，同一屏可能出现"网格按A 判断、文字色按 B 判断"的错位，
+ * 所以统一到 ThemeColors 一处。
+ */
 private fun androidx.compose.ui.graphics.Color.luminanceOf(): Float =
-    0.299f * red + 0.587f * green + 0.114f * blue
+    if (ThemeColors.isLight(this)) 1f else 0f
 
 /**
  * 读取 SAF 选中的文件为字节数组；失败或超过上限返回 null。

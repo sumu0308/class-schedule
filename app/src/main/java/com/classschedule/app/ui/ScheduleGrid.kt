@@ -1,5 +1,6 @@
 package com.classschedule.app.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -26,11 +28,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.classschedule.app.data.Appearance
 import com.classschedule.app.data.Course
 import com.classschedule.app.data.Period
 import com.classschedule.app.data.Term
@@ -431,6 +437,8 @@ fun ScheduleGrid(
     periods: List<Period>,
     isDark: Boolean,
     term: Term?,
+    appearance: Appearance = Appearance.DEFAULT,
+    background: ImageBitmap? = null,
     onCourseTap: (Course) -> Unit,
     onEmptyLongPress: (day: Int, periodIndex: Int) -> Unit,
 ) {
@@ -472,22 +480,50 @@ fun ScheduleGrid(
         }
     }
 
-    val lineColor = if (isDark) Color(0xFF33383F) else Color(0xFFECEEF0)
-    val lineStrong = if (isDark) Color(0xFF454C56) else Color(0xFFDDE2E7)
-    val gutterBg = if (isDark) Color(0xFF202329) else Color(0xFFFAFBFB)
-    val headerBg = if (isDark) Color(0xFF1E2126) else Color(0xFFEDF1F6)
-    val primaryText = if (isDark) Color(0xFFE8EAED) else Color(0xFF2B2F33)
-    val mutedText = if (isDark) Color(0xFF8F959C) else Color(0xFF8A9099)
-    val todayAccent = Color(0xFF0F9D8F)
-    val todayTint = if (isDark) Color(0x1A3B3A) else Color(0xFFE7F6F3)
+    // 网格的骨架色一律取自 MaterialTheme，不再按 isDark 手写两套常量：
+    // v0.12.0 起底色由主色派生，手写常量会与实际主题脱节
+    // （例如浅色主题换深色主色时，手写的浅灰线会压在新底色上）
+    val lineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+    val lineStrong = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+    val primaryText = MaterialTheme.colorScheme.onSurface
+    val mutedText = MaterialTheme.colorScheme.onSurfaceVariant
+    val todayAccent = MaterialTheme.colorScheme.primary
+    // 表头「今天」的强调块：主色底，明确指向今天
+    val todayTint = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+    // 整列的底色：只用极淡的一层，作用是"这一列是今天"而不是"这一列被选中"
+    val todayColumnTint = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
 
     val rowPx = with(density) { ROW_H.toPx() }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-    ) {
+    // 有背景图时，网格自身的底色必须让出透明度，否则会把背景图完全盖住
+    val hasImage = background != null
+    val dim = appearance.backgroundDim.coerceIn(0f, 1f)
+    val gutterBg = if (hasImage) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    }
+    val headerBg = if (hasImage) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+    }
+
+    // Box 承载背景：背景铺满整个可视区，而网格内容在其上滚动。
+    // 背景不跟着内容滚——课表可以很长，背景图跟着滚会让人失去方位感。
+    Box(modifier = Modifier.fillMaxSize()) {
+        // ── 背景层（Canvas 第一层 drawImage） ──
+        ScheduleBackground(
+            image = background,
+            dim = dim,
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
         // ── 表头：左上角 + 星期/日期 ──
         Row(
             modifier = Modifier
@@ -579,7 +615,11 @@ fun ScheduleGrid(
                     modifier = Modifier
                         .weight(1f)
                         .height((rowCount * ROW_H.value).dp)
-                        .background(if (isToday) todayTint else Color.Transparent)
+                        // 「今天」不再整列铺色：整列染色会让这一列的课程卡片
+                        // 全部压上一层色底，看着像被禁用了一样。改为只保留
+                        // 极淡的一层底色作为列的定位提示，真正的强调交给表头
+                        // 的主色文字与色块（见上）。
+                        .background(if (isToday) todayColumnTint else Color.Transparent)
                         .border(0.5.dp, lineColor)
                         .pointerInput(d, sortedPeriods, rowCount) {
                             detectTapGestures(
@@ -627,7 +667,71 @@ fun ScheduleGrid(
                 }
             }
         }
+        }
     }
+}
+
+/**
+ * 课表背景层（v0.12.0）。
+ *
+ * ## 为什么用 Canvas drawImage 而不是 `Image(...)` + ContentScale.Crop
+ *
+ * 两者视觉上等价，但 `Image` 会走 Compose 的布局与绘制管线；
+ * 这里背景是**一张不动的静态图**，用 Canvas 画一次更省，也更容易精确控制
+ * centerCrop 的缩放与居中偏移。
+ *
+ * ## 蒙版的作用
+ *
+ * 用户挑的照片不可控：一张纯白的雪景会让课表格线与文字全部消失。
+ * 所以图上盖一层当前主题底色的半透明蒙版（浓度由用户调），
+ * 既压住背景图的对比度，又不完全遮住图。蒙版颜色取 `background` 而不是黑色：
+ * 用黑色会让深色图片也变暗、浅色图片发灰，取主题底色则与整体色调一致。
+ *
+ * 无背景图时只画底色、不叠蒙版——纯色底再盖一层同色蒙版没有意义。
+ */
+@Composable
+private fun ScheduleBackground(
+    image: ImageBitmap?,
+    dim: Float,
+    modifier: Modifier = Modifier,
+) {
+    val base = MaterialTheme.colorScheme.background
+    Canvas(modifier = modifier) {
+        // 第一层：主题底色（无背景图时这就是全部内容）
+        drawRect(color = base)
+
+        if (image == null) return@Canvas
+
+        // 第二层：背景图，按 centerCrop 铺满
+        val scale = centerCropScale(image.width, image.height, size.width, size.height)
+        val dstW = image.width * scale
+        val dstH = image.height * scale
+        val left = (size.width - dstW) / 2f
+        val top = (size.height - dstH) / 2f
+        drawImage(
+            image = image,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(image.width, image.height),
+            dstOffset = IntOffset(left.toInt(), top.toInt()),
+            dstSize = IntSize(dstW.toInt(), dstH.toInt()),
+        )
+
+        // 第三层：蒙版
+        if (dim > 0f) {
+            drawRect(color = base.copy(alpha = dim.coerceIn(0f, 1f)))
+        }
+    }
+}
+
+/**
+ * centerCrop 的缩放系数：取"能盖满目标区域"的最小缩放。
+ *
+ * 抽成顶层函数（而不是 Canvas 里的局部计算）是为了能单测——
+ * 取 max 而不是 min 是这里唯一容易写反的地方，写反了会变成"填不满还留白"。
+ */
+fun centerCropScale(srcW: Int, srcH: Int, dstW: Float, dstH: Float): Float {
+    if (srcW <= 0 || srcH <= 0 || dstW <= 0f || dstH <= 0f) return 1f
+    return maxOf(dstW / srcW, dstH / srcH)
 }
 
 /**
@@ -705,6 +809,11 @@ private fun CourseCard(
     }
 }
 
-/** 相对亮度，决定块内文字用黑还是白 */
-private fun isLight(color: Color): Boolean =
-    0.299f * color.red + 0.587f * color.green + 0.114f * color.blue > 0.58f
+/**
+ * 相对亮度，决定块内文字用黑还是白。
+ *
+ * v0.12.0 起复用 [ThemeColors.isLight]：课程卡片的颜色可能来自用户的自定义主色，
+ * 这时卡片与文字的对比度必须和全局配色用同一套 WCAG 口径判断，
+ * 否则换个主色就会出现某几张卡片糊字。
+ */
+private fun isLight(color: Color): Boolean = ThemeColors.isLight(color)

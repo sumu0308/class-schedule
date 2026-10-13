@@ -1,10 +1,16 @@
 package com.classschedule.app
 
+import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import com.classschedule.app.data.Appearance
+import com.classschedule.app.data.BackgroundImagePort
+import com.classschedule.app.data.BackgroundImageStore
 import com.classschedule.app.data.Course
 import com.classschedule.app.data.CourseRepository
 import com.classschedule.app.data.CourseStore
 import com.classschedule.app.data.Period
 import com.classschedule.app.data.Term
+import com.classschedule.app.data.ThemeMode
 import com.classschedule.app.data.backup.BackupData
 import com.classschedule.app.data.backup.Fixtures
 import com.classschedule.app.data.backup.ImportCounts
@@ -19,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -776,6 +783,367 @@ class ScheduleViewModelTest {
         assertEquals("无法读取该文件（可能已损坏或是空文件）", vm.message.value)
     }
 
+    // ── 7. 外观设置（v0.12.0） ──────────────────────────
+
+    @Test
+    fun `启动时读取已保存的外观配置`() {
+        val s = store()
+        s.appearance = Appearance(ThemeMode.DARK, 0xFFD9534FL)
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        assertEquals(ThemeMode.DARK, vm.appearance.value.themeMode)
+        assertEquals(0xFFD9534FL, vm.appearance.value.primaryArgb)
+    }
+
+    @Test
+    fun `未保存过外观时用默认值`() {
+        val s = store() // FakeCourseStore 初始就是 Appearance.DEFAULT
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+    }
+
+    @Test
+    fun `切换主题模式_内存与库同时更新并提示`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setThemeMode(ThemeMode.DARK)
+        advance()
+
+        // 内存先变（界面即时生效），库里也跟着变（重启后还在）
+        assertEquals(ThemeMode.DARK, vm.appearance.value.themeMode)
+        assertEquals(ThemeMode.DARK, s.appearance.themeMode)
+        assertEquals("已切换到深色", vm.message.value)
+    }
+
+    @Test
+    fun `更换主色与恢复默认主色`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setPrimaryColor(0xFF2E9E5BL)
+        advance()
+        assertEquals(0xFF2E9E5BL, vm.appearance.value.primaryArgb)
+        assertEquals("已更换主色", vm.message.value)
+
+        vm.setPrimaryColor(null)
+        advance()
+        assertNull(vm.appearance.value.primaryArgb)
+        assertNull(s.appearance.primaryArgb)
+        assertEquals("已恢复默认主色", vm.message.value)
+    }
+
+    @Test
+    fun `恢复默认外观回到出厂状态`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setThemeMode(ThemeMode.DARK)
+        advance()
+        vm.setPrimaryColor(0xFF2E9E5BL)
+        advance()
+
+        vm.resetAppearance()
+        advance()
+
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+        assertEquals(Appearance.DEFAULT, s.appearance)
+        assertEquals("已恢复默认外观", vm.message.value)
+    }
+
+    @Test
+    fun `外观改动后可以撤销_回到进入设置前的状态`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setThemeMode(ThemeMode.DARK)
+        advance()
+        vm.setPrimaryColor(0xFFD9534FL)
+        advance()
+
+        // 连改两下只算一个整体：撤销应回到两项都没改之前，
+        // 而不是退回"只改了主题模式"的中间态
+        vm.undoLast()
+        advance()
+
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+        assertEquals(Appearance.DEFAULT, s.appearance)
+        assertEquals("已恢复之前的外观", vm.message.value)
+    }
+
+    @Test
+    fun `撤销外观后快照被消费_再撤销不会二次回退`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setThemeMode(ThemeMode.LIGHT)
+        advance()
+        vm.undoLast()
+        advance()
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+
+        vm.consumeMessage()
+        vm.undoLast() // 没有待撤销动作，应无害
+        advance()
+
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+    }
+
+    @Test
+    fun `重复选同一个值不产生提示也不覆盖已有撤销凭据`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setThemeMode(ThemeMode.DARK)
+        advance()
+        vm.consumeMessage()
+
+        vm.setThemeMode(ThemeMode.DARK) // 无变化
+        advance()
+
+        assertNull("无变化不该弹提示", vm.message.value)
+        assertTrue("第一次改动留下的撤销凭据不该被无变化的点击覆盖", vm.canUndo())
+        // 且撤销仍然回到最初的样子，而不是被这次无变化的点击改写
+        vm.undoLast()
+        advance()
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+    }
+
+    @Test
+    fun `课程删除后外观改动的撤销作用域互不干扰`() {
+        // 与 0.11.2 修的"撤销作用域错乱"同类问题：外观撤销凭据不能
+        // 被后续的删除操作消费掉，反之亦然
+        val s = store()
+        val course = Course(
+            id = 10, termId = 1, name = "高等数学", dayOfWeek = 1,
+            startPeriodIndex = 1, periodCount = 2, weekRanges = "1-20",
+        )
+        s.setCourses(1, listOf(course))
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.startEdit(course)
+        vm.deleteEditing()
+        advance()
+        assertTrue(vm.canUndo())
+
+        // 外观改动会把撤销凭据换成外观的（每条提示只对应一个动作）
+        vm.setThemeMode(ThemeMode.DARK)
+        advance()
+
+        vm.undoLast()
+        advance()
+        // 撤销的是外观，不是课程删除
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+        assertTrue("课程删除不该被撤销掉", s.deletedCourses.contains(course))
+    }
+
+    // ── 8. 自定义背景图（v0.12.0） ────────────────────────
+
+    @Test
+    fun `导入背景图_落盘成功才写配置并可撤销`() {
+        val s = store()
+        val bg = FakeBackgroundStore(nextImport = BackgroundImageStore.ImportResult.Success("bg_1.jpg"))
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.importBackground(fakeUri())
+        advance()
+
+        assertEquals("bg_1.jpg", vm.appearance.value.backgroundPath)
+        assertEquals("bg_1.jpg", s.appearance.backgroundPath) // 也已落库
+        assertEquals("已更换背景图", vm.message.value)
+        assertTrue(vm.canUndo())
+
+        vm.undoLast()
+        advance()
+        assertNull("撤销后应回到无背景图", vm.appearance.value.backgroundPath)
+    }
+
+    @Test
+    fun `导入背景图_失败时配置不变也不挂撤销`() {
+        val s = store()
+        val bg = FakeBackgroundStore(
+            nextImport = BackgroundImageStore.ImportResult.Failure("无法读取这张图片，换一张试试"),
+        )
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.importBackground(fakeUri())
+        advance()
+
+        // 关键：失败时不能把配置指向一个不存在的文件
+        assertNull(vm.appearance.value.backgroundPath)
+        assertNull(s.appearance.backgroundPath)
+        assertEquals("无法读取这张图片，换一张试试", vm.message.value)
+        assertFalse("失败不是一次可撤销的改动", vm.canUndo())
+    }
+
+    @Test
+    fun `导入背景图_把当前背景作为旧图传给存储层`() {
+        // "先落新图、成功后再删旧图"的顺序由 [BackgroundImageStore] 保证；
+        // ViewModel 这一层要保证的是**把旧文件名正确传下去**，
+        // 否则存储层无从知道该删哪个文件，旧图会一直堆在私有目录里。
+        val s = store()
+        s.appearance = Appearance(backgroundPath = "bg_old.jpg")
+        val bg = FakeBackgroundStore(nextImport = BackgroundImageStore.ImportResult.Success("bg_new.jpg"))
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.importBackground(fakeUri())
+        advance()
+
+        assertEquals(listOf("bg_old.jpg"), bg.importCalls.toList())
+        assertEquals("bg_new.jpg", vm.appearance.value.backgroundPath)
+    }
+
+    @Test
+    fun `清除背景图_清配置并删文件`() {
+        val s = store()
+        s.appearance = Appearance(backgroundPath = "bg_1.jpg")
+        val bg = FakeBackgroundStore()
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.clearBackground()
+        advance()
+
+        assertNull(vm.appearance.value.backgroundPath)
+        assertEquals(listOf("bg_1.jpg"), bg.deletedFiles.toList())
+        assertEquals("已恢复纯色背景", vm.message.value)
+    }
+
+    @Test
+    fun `清除背景图_本来就没有图时不做事`() {
+        val s = store()
+        val bg = FakeBackgroundStore()
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.clearBackground()
+        advance()
+
+        assertTrue("不该有删除动作", bg.deletedFiles.isEmpty())
+        assertNull(vm.message.value)
+    }
+
+    @Test
+    fun `恢复默认外观_连带删掉背景图文件`() {
+        val s = store()
+        s.appearance = Appearance(
+            themeMode = ThemeMode.DARK,
+            primaryArgb = 0xFF2F6FEDL,
+            backgroundPath = "bg_1.jpg",
+        )
+        val bg = FakeBackgroundStore()
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        vm.resetAppearance()
+        advance()
+
+        assertEquals(Appearance.DEFAULT, vm.appearance.value)
+        assertEquals("恢复默认应顺带删掉背景图文件", listOf("bg_1.jpg"), bg.deletedFiles.toList())
+    }
+
+    @Test
+    fun `背景明暗调整收敛到合法区间且不入撤销`() {
+        val s = store()
+        s.appearance = Appearance(backgroundPath = "bg_1.jpg")
+        val vm = ScheduleViewModel(s, dispatcher)
+        advance()
+
+        vm.setBackgroundDim(0.6f)
+        advance()
+        assertEquals(0.6f, vm.appearance.value.backgroundDim, 0.001f)
+        assertEquals(0.6f, s.appearance.backgroundDim, 0.001f)
+        // 连续微调不挂撤销：滑块每动一下都弹一次撤销提示会很吵
+        assertFalse(vm.canUndo())
+
+        vm.setBackgroundDim(5f) // 越界
+        advance()
+        assertEquals(1f, vm.appearance.value.backgroundDim, 0.001f)
+
+        vm.setBackgroundDim(-1f)
+        advance()
+        assertEquals(0f, vm.appearance.value.backgroundDim, 0.001f)
+    }
+
+    @Test
+    fun `背景位图读取失败时回落纯色而不是崩`() = runTest(dispatcher) {
+        val s = store()
+        s.appearance = Appearance(backgroundPath = "bg_1.jpg")
+        val bg = FakeBackgroundStore() // load 返回 null（文件不在）
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = bg)
+        advance()
+
+        assertNull(vm.loadBackground())
+    }
+
+    @Test
+    fun `没有注入背景图存储时给出明确提示而不是静默失败`() {
+        val s = store()
+        val vm = ScheduleViewModel(s, dispatcher, backgroundStore = null)
+        advance()
+
+        vm.importBackground(fakeUri())
+        advance()
+        assertEquals("无法导入背景图：初始化未完成", vm.message.value)
+
+        // 清除路径同样要给出提示——即便当前根本没有背景图，
+        // 否则这条分支会被"没有图就返回"盖掉，异常时无从察觉
+        vm.consumeMessage()
+        vm.clearBackground()
+        advance()
+        assertEquals("无法清除背景图：初始化未完成", vm.message.value)
+    }
+
+    /**
+     * 背景图导入用的 Uri 占位。
+     *
+     * ViewModel 只把它透传给 [BackgroundImagePort]，从不读内容；
+     * 真实现（BackgroundImageStore）才会去 `openInputStream`，那部分不在单测覆盖内。
+     *
+     * 纯 JVM 单测里 android.jar 是桩实现，`Uri.parse` / `Uri.EMPTY` 都不可用
+     * （分别抛 not-mocked 与 null）。ViewModel 与存储层都把 Uri 当不透明句柄透传，
+     * 所以这里传 null 同样能覆盖"落盘成功才写配置"等编排规则。
+     */
+    private fun fakeUri(): Uri? = null
+
+    /**
+     * 内存版 [BackgroundImagePort]：记录调用与结果，
+     * 让 ViewModel 的编排逻辑（成功才写配置、失败不动配置、清图要删文件）可被验证。
+     */
+    private class FakeBackgroundStore(
+        private val nextImport: BackgroundImageStore.ImportResult? =
+            BackgroundImageStore.ImportResult.Success("bg_new.jpg"),
+    ) : BackgroundImagePort {
+        val deletedFiles = mutableListOf<String>()
+        /** 每次 import 收到的"旧文件名"，用于验证 ViewModel 有把当前背景传下去 */
+        val importCalls = mutableListOf<String?>()
+        var importResult: BackgroundImageStore.ImportResult? = nextImport
+
+        override suspend fun import(uri: Uri?, previousFileName: String?): BackgroundImageStore.ImportResult {
+            importCalls += previousFileName
+            return importResult ?: BackgroundImageStore.ImportResult.Failure("没有预置结果")
+        }
+
+        override suspend fun load(fileName: String?): ImageBitmap? = null
+
+        override suspend fun delete(fileName: String?) {
+            fileName?.let { deletedFiles += it }
+        }
+    }
+
     /**
      * 手工构造的整库备份 JSON（10.5：导出已移除，测试输入改为手工构造，
      * 避免"导出/导入对称 bug 互相抵消"的盲区）。
@@ -885,6 +1253,16 @@ class ScheduleViewModelTest {
 
         override fun nextPeriod(termId: Long, existing: List<Period>): Period =
             CourseRepository.nextPeriod(termId, existing)
+
+        // ── 外观配置：内存里真实存取，Flow 不涉及（外观是一次性读 + 命令式写） ──
+
+        var appearance: Appearance = Appearance.DEFAULT
+
+        override suspend fun loadAppearance(): Appearance = appearance
+
+        override suspend fun saveAppearance(appearance: Appearance) {
+            this.appearance = appearance
+        }
 
         // ── 导入：内存里真实应用，Flow 会重发，VM 的 flatMapLatest 能观察到 ──
 
