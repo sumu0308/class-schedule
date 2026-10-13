@@ -67,6 +67,23 @@ object XlsxCodec {
             }
             if (grid.nonEmptyCount() == 0) continue // 空 sheet（常见：第一个 sheet 是说明页）
 
+            // 青果「列表」模式：表头里有「上课时间地点」这一列。
+            // 必须优先于矩阵/列表布局判断——青果列表不是"星期/节次分列"，
+            // 走通用 CSV 行解析会因列位置不符而整份报废。
+            val kingosoft = KingosoftListCodec.detectHeader(grid.rows)
+            if (kingosoft != null) {
+                val report = KingosoftListCodec.parseGrid(
+                    grid.rows, kingosoft.first, kingosoft.second, term, periods, sheet.name,
+                )
+                if (report.courses.isNotEmpty()) return report
+                issues += if (report.issues.isNotEmpty()) {
+                    report.issues.map { ParseIssue("工作表「${sheet.name}」", it.reason) }
+                } else {
+                    listOf(ParseIssue("工作表「${sheet.name}」", "没有解析到课程"))
+                }
+                continue
+            }
+
             val matrix = detectMatrix(grid, periods)
             val report = if (matrix != null) {
                 parseMatrix(grid, matrix, term, periods, sheet.name)
