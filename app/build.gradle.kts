@@ -45,6 +45,22 @@ android {
         }
     }
 
+    // 输出文件名带上版本号：默认产物叫 app-release.apk，多个版本摆在一起时
+    // 分不清哪个是哪个。改成 class-schedule-<versionName>-<buildType>.apk，
+    // 装包前一眼能看出版本。
+    //
+    // 已知坑：这里**不能**用旧的 applicationVariants.all {} —— AGP 9 已经移除了它，
+    // 用了会直接编译失败。必须走 androidComponents.onVariants 新 DSL。
+    // 同理 versionName 要从 defaultConfig 上读（Variant 没有 versionName 属性）。
+    androidComponents {
+        onVariants { variant ->
+            val version = defaultConfig.versionName
+            variant.outputs.forEach { output ->
+                output.outputFileName.set("class-schedule-$version-${variant.name}.apk")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
